@@ -1,0 +1,19 @@
+{
+  "name": "quittance-agents",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "setup": "tsx scripts/setup-agents.ts",
+    "smoke": "tsx scripts/e2e-smoke.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "gokite-aa-sdk": "latest",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}
