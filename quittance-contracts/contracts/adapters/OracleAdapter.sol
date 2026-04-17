@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.26;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "../types/QuittanceTypes.sol";
 import "../interfaces/IProofAdapter.sol";
 
@@ -18,6 +19,7 @@ import "../interfaces/IProofAdapter.sol";
 ///         The `q.attestor` field must match the recovered signer and be registered.
 contract OracleAdapter is Ownable, IProofAdapter {
     using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
 
     mapping(address => bool) public registeredAttestors;
 
