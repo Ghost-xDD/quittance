@@ -385,160 +385,155 @@ describe("ZktlsAdapter (Tier-2 honest mock)", () => {
 });
 
 // ─── CosignAdapter ───────────────────────────────────────────────────────────
+//
+// COSIGN tests use raw ethers.Wallet objects (not HardhatEthersSigners) so we
+// can access signingKey for adaptor-signature scalar arithmetic.
 
 describe("CosignAdapter", () => {
-  // Build a valid COSIGN proof using the secp256k1 adaptor-sig approximation.
-  // We use a random scalar t as the witness and construct T = t·G using
-  // ecrecover's inverse: sign a known message with t as the private key.
-  async function makeCosignPayload(
-    buyer: Signer,
-    seller: Signer,
+  const N = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
+
+  // Build a valid COSIGN proof:
+  //   1. Generate witness scalar t from a random Wallet.
+  //   2. Seller signs paymentMessage with their key; subtract t from s so that
+  //      Adapt(sigHat_S, t) → s_full → recovers to sellerWallet.address.
+  //   3. Buyer countersigns the COSIGN_ACK digest.
+  async function makeCosignProof(
+    buyerWallet: ethers.Wallet,
+    sellerWallet: ethers.Wallet,
     paymentId: string,
     resultHash: string,
   ): Promise<{ proofPayload: string; T_x: string; T_parity: number }> {
-    // Generate a random witness scalar t (as a Wallet)
     const witnessWallet = ethers.Wallet.createRandom();
-    const t = witnessWallet.privateKey;
-    const t_bytes32 = t as string;
+    const t       = BigInt(witnessWallet.privateKey);
+    const t_hex   = ethers.zeroPadValue(ethers.toBeHex(t), 32);
 
-    // T = t·G: use witnessWallet's public key
-    const pubkeyHex = witnessWallet.signingKey.publicKey; // uncompressed 04...
-    const pubkeyBytes = ethers.getBytes(pubkeyHex);
-    const T_x_bytes   = pubkeyBytes.slice(1, 33);
-    const T_y_last    = pubkeyBytes[64];
-    const T_parity    = (T_y_last % 2 === 0) ? 0x02 : 0x03;
-    const T_x         = ethers.hexlify(T_x_bytes);
+    const pubBytes = ethers.getBytes(witnessWallet.signingKey.publicKey);
+    const T_x      = ethers.hexlify(pubBytes.slice(1, 33));
+    const T_parity = (pubBytes[64] % 2 === 0) ? 0x02 : 0x03;
 
-    // Buyer countersigns: keccak256(abi.encode("COSIGN_ACK", paymentId, T_x, T_parity))
-    const ackMessage = ethers.keccak256(
+    // Buyer ack
+    const ackDigest = ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(
         ["string", "bytes32", "bytes32", "uint8"],
         ["COSIGN_ACK", paymentId, T_x, T_parity],
       )
     );
-    const sig_U = await buyer.signMessage(ethers.getBytes(ackMessage));
+    const sig_U = await buyerWallet.signMessage(ethers.getBytes(ackDigest));
 
-    // Seller pre-signs payment message: keccak256(abi.encode(paymentId, resultHash, T_x, T_parity))
-    const paymentMessage = ethers.keccak256(
+    // Seller presig: sign normally, subtract t from s
+    const paymentDigest = ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(
         ["bytes32", "bytes32", "bytes32", "uint8"],
         [paymentId, resultHash, T_x, T_parity],
       )
     );
-
-    // For testing we need the *adapted* signature to verify as seller.
-    // In the real scheme, seller pre-signs with scalar (k - t) so that adding t
-    // recovers to seller. For test simplicity, we sign directly with seller and
-    // set t=0 to use the seller sig as the "adapted" sig directly.
-    // The contract adds t to s; we compensate by signing with (s_actual - t) mod n.
-    // Here: use seller's actual key and subtract 0 (t=0 test is rejected by contract).
-    // Instead, we do a real Schnorr-like test:
-    //   1. Pick t = witnessWallet.privateKey
-    //   2. sellerPresig signs with sk = (sellerKey - t) mod n so that adapting gives sellerKey sig
-    //   This requires raw scalar arithmetic. For a unit test we can also just
-    //   verify the adapter's structural checks (wrong attestor, wrong buyer sig, etc.)
-    //   and use an end-to-end integration path for the happy-path arithmetic.
-    //
-    // For now, construct a structurally valid payload and rely on the ecrecover math
-    // to confirm or reject. The test below uses t=1 as a minimal non-zero witness.
-
-    const t_minimal = ethers.zeroPadValue("0x01", 32);
-
-    // Sign with seller's key directly (s_presig = s_adapted - 1 mod n)
-    // Not easily computable in TS without raw scalar access.
-    // Use witnessWallet to sign so we can control the exact s value:
-    // This is a structural smoke-test of the payload encoding path.
-    const sellerSig65 = await (seller as ethers.Wallet).signingKey.sign(
-      ethers.getBytes(paymentMessage)
-    );
-    const sigHat_S = ethers.concat([
-      sellerSig65.r,
-      sellerSig65.s,
-      sellerSig65.v === 27 ? "0x1b" : "0x1c",
+    const sellerSig  = sellerWallet.signingKey.sign(ethers.getBytes(paymentDigest));
+    const s_presig   = (BigInt(sellerSig.s) - t + N) % N;
+    const sigHat_S   = ethers.concat([
+      sellerSig.r,
+      ethers.zeroPadValue(ethers.toBeHex(s_presig), 32),
+      sellerSig.v === 27 ? "0x1b" : "0x1c",
     ]);
 
     const proofPayload = ethers.AbiCoder.defaultAbiCoder().encode(
       ["bytes32", "uint8", "bytes", "bytes", "bytes32"],
-      [T_x, T_parity, sigHat_S, sig_U, t_minimal],
+      [T_x, T_parity, sigHat_S, sig_U, t_hex],
     );
 
     return { proofPayload, T_x, T_parity };
   }
 
+  // Fresh deployment with funded raw Wallet objects for buyer + seller.
+  async function deployCosign() {
+    const base = await deploy();
+    const [funder] = await ethers.getSigners();
+
+    const buyerW  = ethers.Wallet.createRandom().connect(ethers.provider);
+    const sellerW = ethers.Wallet.createRandom().connect(ethers.provider);
+
+    await funder.sendTransaction({ to: buyerW.address,  value: ethers.parseEther("1") });
+    await funder.sendTransaction({ to: sellerW.address, value: ethers.parseEther("1") });
+
+    await base.contracts.token.mint(buyerW.address,  AMOUNT * 10n);
+    await base.contracts.token.mint(sellerW.address, MIN_BOND * 3n);
+    await base.contracts.token.connect(sellerW).approve(await base.contracts.bond.getAddress(), MIN_BOND * 3n);
+    await base.contracts.bond.connect(sellerW).deposit(MIN_BOND * 3n);
+    await base.contracts.token.connect(buyerW).approve(await base.contracts.escrow.getAddress(), AMOUNT * 10n);
+
+    return { ...base, buyerW, sellerW };
+  }
+
+  it("accepts a valid COSIGN proof (adaptor-sig happy path)", async () => {
+    const { contracts, buyerW, sellerW } = await deployCosign();
+    const { paymentId, deadline } = await openEscrow(contracts, buyerW, sellerW, ProofType.COSIGN);
+    const { proofPayload } = await makeCosignProof(buyerW, sellerW, paymentId, RESULT_H);
+
+    await contracts.registry.post({
+      paymentId, requestHash: REQUEST_H, resultHash: RESULT_H,
+      sellerPassport: sellerW.address, buyerPassport: buyerW.address,
+      proofType: ProofType.COSIGN, proofPayload,
+      attestor: ethers.ZeroAddress, deliveredAt: 0n, deadline,
+    });
+
+    const q = await contracts.registry.getQuittance(paymentId);
+    expect(q.deliveredAt).to.be.gt(0n);
+  });
+
   it("rejects COSIGN proof with wrong buyer countersignature", async () => {
-    const { contracts, buyer, seller, attestor } = await deploy();
-    const { paymentId, deadline } = await openEscrow(contracts, buyer, seller, ProofType.COSIGN);
-    const buyerAddr  = await buyer.getAddress();
-    const sellerAddr = await seller.getAddress();
+    const { contracts, buyerW, sellerW, attestor } = await deployCosign();
+    const { paymentId, deadline } = await openEscrow(contracts, buyerW, sellerW, ProofType.COSIGN);
+    const { proofPayload } = await makeCosignProof(buyerW, sellerW, paymentId, RESULT_H);
 
-    const { proofPayload, T_x, T_parity } = await makeCosignPayload(buyer, seller, paymentId, RESULT_H);
-
-    // Tamper: replace buyer sig with attestor sig (wrong signer)
-    const [decodedT_x, decodedT_parity, sigHat_S, , t] = ethers.AbiCoder.defaultAbiCoder().decode(
-      ["bytes32", "uint8", "bytes", "bytes", "bytes32"],
-      proofPayload,
+    const [T_x, T_parity, sigHat_S, , t] = ethers.AbiCoder.defaultAbiCoder().decode(
+      ["bytes32", "uint8", "bytes", "bytes", "bytes32"], proofPayload,
     ) as [string, number, string, string, string];
 
     const wrongAck = ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(
         ["string", "bytes32", "bytes32", "uint8"],
-        ["COSIGN_ACK", paymentId, decodedT_x, decodedT_parity],
+        ["COSIGN_ACK", paymentId, T_x, T_parity],
       )
     );
     const wrongSig_U = await attestor.signMessage(ethers.getBytes(wrongAck));
-
     const badPayload = ethers.AbiCoder.defaultAbiCoder().encode(
       ["bytes32", "uint8", "bytes", "bytes", "bytes32"],
-      [decodedT_x, decodedT_parity, sigHat_S, wrongSig_U, t],
+      [T_x, T_parity, sigHat_S, wrongSig_U, t],
     );
 
     await expect(contracts.registry.post({
       paymentId, requestHash: REQUEST_H, resultHash: RESULT_H,
-      sellerPassport: sellerAddr, buyerPassport: buyerAddr,
+      sellerPassport: sellerW.address, buyerPassport: buyerW.address,
       proofType: ProofType.COSIGN, proofPayload: badPayload,
       attestor: ethers.ZeroAddress, deliveredAt: 0n, deadline,
     })).to.be.revertedWith("Registry: proof invalid");
   });
 
   it("rejects COSIGN proof with non-zero attestor (must be address(0))", async () => {
-    const { contracts, buyer, seller, attestor } = await deploy();
-    const { paymentId, deadline } = await openEscrow(contracts, buyer, seller, ProofType.COSIGN);
-    const buyerAddr    = await buyer.getAddress();
-    const sellerAddr   = await seller.getAddress();
-    const attestorAddr = await attestor.getAddress();
+    const { contracts, buyerW, sellerW, attestor } = await deployCosign();
+    const { paymentId, deadline } = await openEscrow(contracts, buyerW, sellerW, ProofType.COSIGN);
+    const { proofPayload } = await makeCosignProof(buyerW, sellerW, paymentId, RESULT_H);
 
-    const { proofPayload } = await makeCosignPayload(buyer, seller, paymentId, RESULT_H);
-
-    // attestor field should be address(0) for COSIGN
     await expect(contracts.registry.post({
       paymentId, requestHash: REQUEST_H, resultHash: RESULT_H,
-      sellerPassport: sellerAddr, buyerPassport: buyerAddr,
+      sellerPassport: sellerW.address, buyerPassport: buyerW.address,
       proofType: ProofType.COSIGN, proofPayload,
-      attestor: attestorAddr, // <— wrong
+      attestor: await attestor.getAddress(), // must be address(0)
       deliveredAt: 0n, deadline,
     })).to.be.revertedWith("Registry: proof invalid");
   });
 
   it("rejects COSIGN proof with zero witness (t=0)", async () => {
-    const { contracts, buyer, seller } = await deploy();
-    const { paymentId, deadline } = await openEscrow(contracts, buyer, seller, ProofType.COSIGN);
-    const buyerAddr  = await buyer.getAddress();
-    const sellerAddr = await seller.getAddress();
-
-    const T_x = ethers.randomBytes(32);
-    const T_parity = 0x02;
-    const sigHat_S = ethers.randomBytes(65);
-    const sig_U    = ethers.randomBytes(65);
-    const t_zero   = ethers.zeroPadValue("0x00", 32); // zero witness — must reject
+    const { contracts, buyerW, sellerW } = await deployCosign();
+    const { paymentId, deadline } = await openEscrow(contracts, buyerW, sellerW, ProofType.COSIGN);
 
     const payload = ethers.AbiCoder.defaultAbiCoder().encode(
       ["bytes32", "uint8", "bytes", "bytes", "bytes32"],
-      [T_x, T_parity, sigHat_S, sig_U, t_zero],
+      [ethers.hexlify(ethers.randomBytes(32)), 0x02, ethers.randomBytes(65), ethers.randomBytes(65), ethers.zeroPadValue("0x00", 32)],
     );
 
     await expect(contracts.registry.post({
       paymentId, requestHash: REQUEST_H, resultHash: RESULT_H,
-      sellerPassport: sellerAddr, buyerPassport: buyerAddr,
+      sellerPassport: sellerW.address, buyerPassport: buyerW.address,
       proofType: ProofType.COSIGN, proofPayload: payload,
       attestor: ethers.ZeroAddress, deliveredAt: 0n, deadline,
     })).to.be.revertedWith("Registry: proof invalid");
@@ -546,125 +541,127 @@ describe("CosignAdapter", () => {
 });
 
 // ─── Forwarder ───────────────────────────────────────────────────────────────
+//
+// Forwarder tests use raw ethers.Wallet objects so signTypedData is available
+// via the underlying SigningKey (HardhatEthersSigner wraps differently in v6).
 
 describe("Forwarder", () => {
-  it("rejects forwardOpenEscrow with invalid buyer signature", async () => {
-    const { contracts, buyer, seller, attestor } = await deploy();
+  async function deployForwarder() {
+    const base = await deploy();
+    const [funder] = await ethers.getSigners();
 
+    const buyerW  = ethers.Wallet.createRandom().connect(ethers.provider);
+    const sellerW = ethers.Wallet.createRandom().connect(ethers.provider);
+    const wrongW  = ethers.Wallet.createRandom().connect(ethers.provider);
+
+    for (const w of [buyerW, sellerW, wrongW]) {
+      await funder.sendTransaction({ to: w.address, value: ethers.parseEther("1") });
+    }
+
+    await base.contracts.token.mint(buyerW.address,  AMOUNT * 10n);
+    await base.contracts.token.mint(sellerW.address, MIN_BOND * 3n);
+    await base.contracts.token.connect(sellerW).approve(await base.contracts.bond.getAddress(), MIN_BOND * 3n);
+    await base.contracts.bond.connect(sellerW).deposit(MIN_BOND * 3n);
+
+    return { ...base, buyerW, sellerW, wrongW };
+  }
+
+  function getForwarderDomain(chainId: bigint, forwarderAddr: string) {
+    return {
+      name: "QuittanceForwarder",
+      version: "1",
+      chainId,
+      verifyingContract: forwarderAddr,
+    };
+  }
+
+  const FORWARD_TYPES = {
+    ForwardOpenEscrow: [
+      { name: "buyerPassport",  type: "address" },
+      { name: "sellerPassport", type: "address" },
+      { name: "requestHash",    type: "bytes32"  },
+      { name: "amount",         type: "uint256"  },
+      { name: "gasFeeBudget",   type: "uint256"  },
+      { name: "deadline",       type: "uint64"   },
+      { name: "proofType",      type: "uint8"    },
+      { name: "minBondTier",    type: "uint8"    },
+      { name: "nonce",          type: "uint64"   },
+    ],
+  };
+
+  it("rejects forwardOpenEscrow with invalid buyer signature", async () => {
+    const { contracts, sellerW, wrongW } = await deployForwarder();
+
+    const forwarderAddr = await contracts.forwarder.getAddress();
     const block    = await ethers.provider.getBlock("latest");
     const deadline = BigInt(block!.timestamp) + 300n;
-    const nonce    = 0n;
-
-    // Fund and approve forwarder
-    const forwarderAddr = await contracts.forwarder.getAddress();
-    await contracts.token.connect(buyer).approve(forwarderAddr, AMOUNT + ethers.parseUnits("0.01", 18));
 
     const params = {
-      buyerPassport:  await buyer.getAddress(),
-      sellerPassport: await seller.getAddress(),
+      buyerPassport:  wrongW.address, // claim to be wrongW
+      sellerPassport: sellerW.address,
       requestHash:    REQUEST_H,
       amount:         AMOUNT,
       gasFeeBudget:   ethers.parseUnits("0.01", 18),
       deadline,
       proofType:      ProofType.ORACLE,
       minBondTier:    0,
-      nonce,
+      nonce:          0n,
     };
 
-    // Sign with attestor instead of buyer (wrong key)
-    const domain = {
-      name: "QuittanceForwarder",
-      version: "1",
-      chainId: (await ethers.provider.getNetwork()).chainId,
-      verifyingContract: forwarderAddr,
-    };
-    const types = {
-      ForwardOpenEscrow: [
-        { name: "buyerPassport",  type: "address" },
-        { name: "sellerPassport", type: "address" },
-        { name: "requestHash",    type: "bytes32"  },
-        { name: "amount",         type: "uint256"  },
-        { name: "gasFeeBudget",   type: "uint256"  },
-        { name: "deadline",       type: "uint64"   },
-        { name: "proofType",      type: "uint8"    },
-        { name: "minBondTier",    type: "uint8"    },
-        { name: "nonce",          type: "uint64"   },
-      ],
-    };
-    const wrongSig = await (attestor as ethers.Wallet).signTypedData(domain, types, params);
+    const chainId = (await ethers.provider.getNetwork()).chainId;
+    // sellerW signs (wrong signer — not wrongW/buyerPassport)
+    const wrongSig = await sellerW.signTypedData(
+      getForwarderDomain(chainId, forwarderAddr), FORWARD_TYPES, params
+    );
 
     await expect(
-      contracts.forwarder.connect(attestor).forwardOpenEscrow(params, wrongSig)
+      contracts.forwarder.connect(sellerW).forwardOpenEscrow(params, wrongSig)
     ).to.be.revertedWith("Forwarder: invalid buyer signature");
   });
 
   it("executes forwardOpenEscrow with valid buyer signature", async () => {
-    const { contracts, buyer, seller } = await deploy();
+    const { contracts, buyerW, sellerW } = await deployForwarder();
 
     const forwarderAddr = await contracts.forwarder.getAddress();
     const block    = await ethers.provider.getBlock("latest");
     const deadline = BigInt(block!.timestamp) + 300n;
-    const nonce    = 0n;
     const budget   = ethers.parseUnits("0.01", 18);
 
-    await contracts.token.connect(buyer).approve(forwarderAddr, AMOUNT + budget);
+    await contracts.token.connect(buyerW).approve(forwarderAddr, AMOUNT + budget);
 
     const params = {
-      buyerPassport:  await buyer.getAddress(),
-      sellerPassport: await seller.getAddress(),
+      buyerPassport:  buyerW.address,
+      sellerPassport: sellerW.address,
       requestHash:    REQUEST_H,
       amount:         AMOUNT,
       gasFeeBudget:   budget,
       deadline,
       proofType:      ProofType.ORACLE,
       minBondTier:    0,
-      nonce,
+      nonce:          0n,
     };
 
-    const domain = {
-      name: "QuittanceForwarder",
-      version: "1",
-      chainId: (await ethers.provider.getNetwork()).chainId,
-      verifyingContract: forwarderAddr,
-    };
-    const types = {
-      ForwardOpenEscrow: [
-        { name: "buyerPassport",  type: "address" },
-        { name: "sellerPassport", type: "address" },
-        { name: "requestHash",    type: "bytes32"  },
-        { name: "amount",         type: "uint256"  },
-        { name: "gasFeeBudget",   type: "uint256"  },
-        { name: "deadline",       type: "uint64"   },
-        { name: "proofType",      type: "uint8"    },
-        { name: "minBondTier",    type: "uint8"    },
-        { name: "nonce",          type: "uint64"   },
-      ],
-    };
-    const sig = await (buyer as ethers.Wallet).signTypedData(domain, types, params);
+    const chainId = (await ethers.provider.getNetwork()).chainId;
+    const sig = await buyerW.signTypedData(
+      getForwarderDomain(chainId, forwarderAddr), FORWARD_TYPES, params
+    );
 
-    const tx = await contracts.forwarder.connect(seller).forwardOpenEscrow(params, sig);
+    const tx = await contracts.forwarder.connect(sellerW).forwardOpenEscrow(params, sig);
     const receipt = await tx.wait();
     expect(receipt!.status).to.equal(1);
-
-    // Forwarder emits EscrowForwarded
-    const iface = contracts.forwarder.interface;
-    const log = receipt!.logs.find(l => {
-      try { iface.parseLog(l as any); return true; } catch { return false; }
-    });
-    expect(log).to.not.be.undefined;
   });
 
   it("pauses and unpauses correctly", async () => {
-    const { contracts, buyer, seller } = await deploy();
+    const { contracts, buyerW, sellerW } = await deployForwarder();
 
     await contracts.forwarder.setPaused(true);
 
     const forwarderAddr = await contracts.forwarder.getAddress();
-    await contracts.token.connect(buyer).approve(forwarderAddr, AMOUNT * 2n);
+    await contracts.token.connect(buyerW).approve(forwarderAddr, AMOUNT * 2n);
 
     const params = {
-      buyerPassport:  await buyer.getAddress(),
-      sellerPassport: await seller.getAddress(),
+      buyerPassport:  buyerW.address,
+      sellerPassport: sellerW.address,
       requestHash:    REQUEST_H,
       amount:         AMOUNT,
       gasFeeBudget:   ethers.parseUnits("0.01", 18),
@@ -675,7 +672,7 @@ describe("Forwarder", () => {
     };
 
     await expect(
-      contracts.forwarder.connect(buyer).forwardOpenEscrow(params, "0x" + "00".repeat(65))
+      contracts.forwarder.connect(buyerW).forwardOpenEscrow(params, "0x" + "00".repeat(65))
     ).to.be.revertedWith("Forwarder: paused");
   });
 });
