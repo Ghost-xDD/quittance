@@ -110,13 +110,8 @@ async function deploy(): Promise<{ contracts: Contracts; owner: Signer; buyer: S
   await threshold.addAttestor(await attestor.getAddress());
 
   // Forwarder
-  const relayerFee = ethers.parseUnits("0.001", 18);
   const FW = await ethers.getContractFactory("Forwarder");
-  const forwarder = await FW.deploy(
-    await escrow.getAddress(),
-    await token.getAddress(),
-    relayerFee,
-  ) as Forwarder;
+  const forwarder = await FW.deploy(await escrow.getAddress()) as Forwarder;
 
   // QuittanceEvaluatorHook
   const HK = await ethers.getContractFactory("QuittanceEvaluatorHook");
@@ -581,7 +576,6 @@ describe("Forwarder", () => {
       { name: "sellerPassport", type: "address" },
       { name: "requestHash",    type: "bytes32"  },
       { name: "amount",         type: "uint256"  },
-      { name: "gasFeeBudget",   type: "uint256"  },
       { name: "deadline",       type: "uint64"   },
       { name: "proofType",      type: "uint8"    },
       { name: "minBondTier",    type: "uint8"    },
@@ -601,7 +595,6 @@ describe("Forwarder", () => {
       sellerPassport: sellerW.address,
       requestHash:    REQUEST_H,
       amount:         AMOUNT,
-      gasFeeBudget:   ethers.parseUnits("0.01", 18),
       deadline,
       proofType:      ProofType.ORACLE,
       minBondTier:    0,

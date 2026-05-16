@@ -151,13 +151,9 @@ async function main() {
   console.log(`ZktlsAdapter:        ${zktlsAdapterAddress}`);
 
   // ── 12. Forwarder (EIP-712 gasless meta-tx) ───────────────────────────────────
-  // relayerFee: ~0.001 settlement units (tuned per network, ≈ gas cost in token)
-  const relayerFee = cfg.tokenDecimals === 18
-    ? ethers.parseUnits("0.001", 18)   // 0.001 PYUSD on testnet
-    : ethers.parseUnits("0.001", 6);   // 0.001 USDC.e on mainnet
   console.log("Deploying Forwarder...");
   const Forwarder = await ethers.getContractFactory("Forwarder");
-  const forwarder = await Forwarder.deploy(escrowAddress, tokenAddress, relayerFee);
+  const forwarder = await Forwarder.deploy(escrowAddress);
   await forwarder.waitForDeployment();
   const forwarderAddress = await forwarder.getAddress();
   console.log(`Forwarder:           ${forwarderAddress}`);
