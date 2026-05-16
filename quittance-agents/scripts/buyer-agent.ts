@@ -1,49 +1,340 @@
 /**
- * buyer-agent.ts — Quittance Buyer Agent
+ * buyer-agent.ts — Quittance Buyer Agent (GPT-4o mini)
  *
- * A reasoning buyer agent that:
- *   1. Queries on-chain seller reputation to choose a provider.
- *   2. Makes an x402 HTTP call — receives a 402 payment challenge.
- *   3. Opens Escrow approval via AA (gasless UserOp) if not already approved.
- *   4. Retries the request with X-Payment-* auth headers.
- *   5. Receives settlement confirmation + verifies quittance on-chain.
- *   6. Streams structured AgentEvents to the web UI SSE endpoint.
+ * A real LLM agent that:
+ *   1. Receives a task from the user.
+ *   2. Calls list_sellers → inspects on-chain reputation.
+ *   3. Decides which seller to use (model reasoning).
+ *   4. Calls send_sms_via_x402 → full x402 + AA escrow + quittance.
+ *   5. Reports settlement to the user.
+ *
+ * Every "reasoning" message is real model output. Every "action" event
+ * is a real on-chain transaction.
  *
  * Usage:  npm run buyer-agent [-- --task "send SMS to +1-555-0192"]
  *
  * Environment
- *   BUYER_PRIVATE_KEY          EOA key for the buyer passport
+ *   OPENAI_API_KEY            GPT-4o mini access
+ *   BUYER_PRIVATE_KEY         EOA key for the buyer passport
  *   SELLER_SMS_PRO_PRIVATE_KEY EOA key to derive seller passport address
- *   SELLER_URL                 Seller HTTP endpoint (default: http://localhost:4001/task)
- *   EVENTS_WEBHOOK_URL         Web UI webhook (default: http://localhost:3001/api/agent-events)
+ *   SELLER_URL                Seller HTTP endpoint (default: http://localhost:4001/task)
+ *   EVENTS_WEBHOOK_URL        Web UI webhook (default: http://localhost:3001/api/agent-events)
  */
 
 import "dotenv/config";
+import OpenAI from "openai";
 import { ethers } from "ethers";
-import { getProvider, getSigner, getContracts, makePaymentId, fmt } from "../lib/contracts";
+import {
+  getProvider, getSigner, getContracts,
+  makePaymentId, fmt, TIER_LABEL,
+} from "../lib/contracts";
 import { makeSDK, aaAddress, aaSend, encodeCall } from "../lib/aa";
 import { buildPaymentHeaders } from "../lib/x402";
 import { emit, emitAction } from "../lib/events";
 import type { X402Challenge, X402Settlement } from "../lib/x402";
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// ─── OpenAI client ────────────────────────────────────────────────────────────
 
-const SELLER_URL   = process.env.SELLER_URL ?? "http://localhost:4001/task";
-const MAX_APPROVE  = ethers.parseUnits("10", 18); // pre-approve 10 PYUSD for multiple cycles
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Seller registry ─────────────────────────────────────────────────────────
+// Add entries here as more sellers come online. Keys map to env vars.
 
-function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms)); }
-function mkId()            { return Math.random().toString(36).slice(2, 10); }
+interface SellerConfig {
+  key: string;
+  url: string;
+  service: string;
+  proofType: string;
+}
 
-async function postJSON<T>(url: string, body: unknown, headers: Record<string, string> = {}): Promise<{ status: number; data: T }> {
-  const res = await fetch(url, {
+function buildSellerRegistry(): Record<string, SellerConfig> {
+  const reg: Record<string, SellerConfig> = {};
+  if (process.env.SELLER_SMS_PRO_PRIVATE_KEY) {
+    reg["sms.kite"] = {
+      key: process.env.SELLER_SMS_PRO_PRIVATE_KEY,
+      url: process.env.SELLER_URL ?? "http://localhost:4001/task",
+      service: "SMS delivery",
+      proofType: "ORACLE",
+    };
+  }
+  if (process.env.SELLER_SMS_CHEAP_PRIVATE_KEY) {
+    reg["sms-cheap.kite"] = {
+      key: process.env.SELLER_SMS_CHEAP_PRIVATE_KEY,
+      url: process.env.SELLER_CHEAP_URL ?? "http://localhost:4002/task",
+      service: "SMS delivery (budget)",
+      proofType: "ORACLE",
+    };
+  }
+  return reg;
+}
+
+// ─── System prompt ────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `\
+You are a Quittance buyer agent running on Kite testnet. You help users \
+complete tasks — starting with SMS delivery — through the Quittance protocol: \
+an atomic Exec-Pay-Deliver system where funds only leave escrow when \
+cryptographic proof of delivery is posted on-chain.
+
+PROTOCOL OVERVIEW
+  1. Funds are locked in an Escrow smart contract.
+  2. The seller delivers the service and posts an on-chain Quittance (proof).
+  3. If the proof is valid, escrow releases payment to the seller.
+  4. If no proof arrives before the deadline, the buyer gets a full refund.
+  5. Sellers must post a bond that is slashable on fraudulent settlement.
+
+YOUR JOB
+  - Call list_sellers to see available sellers and their on-chain reputation.
+  - Choose the best seller for the task. Consider: bond size (must exceed 
+    the payment so risk is bounded), success rate, and seller tier 
+    (Bronze < Silver < Gold).
+  - Call send_sms_via_x402 to execute the payment. This handles everything: 
+    escrow approval, x402 payment headers, and quittance verification.
+  - Report the result to the user, including the on-chain transaction hash.
+
+Be concise. Show your reasoning about seller selection briefly — one or two 
+sentences. Prefer sellers with higher bonds and success rates. If the only 
+available seller has poor stats, note the risk explicitly.`;
+
+// ─── OpenAI tool schemas ──────────────────────────────────────────────────────
+
+const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "list_sellers",
+      description:
+        "Lists all available service sellers registered on Kite testnet with their on-chain reputation stats (tier, success rate, bond size, settled count).",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_buyer_wallet",
+      description:
+        "Returns the buyer's AA passport address, current PYUSD balance, and PYUSD allowance granted to the Escrow contract.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_sms_via_x402",
+      description:
+        "Executes a full Quittance payment cycle to send an SMS via a named seller: opens escrow, delivers x402 payment auth, waits for on-chain proof, and returns the settlement result.",
+      parameters: {
+        type: "object",
+        properties: {
+          sellerName: {
+            type: "string",
+            description: "Seller name from list_sellers, e.g. 'sms.kite'",
+          },
+          to: {
+            type: "string",
+            description: "Destination phone number, e.g. '+1-555-0192'",
+          },
+          message: {
+            type: "string",
+            description: "The SMS body to deliver",
+          },
+        },
+        required: ["sellerName", "to", "message"],
+      },
+    },
+  },
+];
+
+// ─── Tool executors ───────────────────────────────────────────────────────────
+
+async function toolListSellers(
+  sellers: Record<string, SellerConfig>,
+  provider: ethers.JsonRpcProvider,
+  sdk: ReturnType<typeof makeSDK>,
+) {
+  const c = getContracts(provider);
+  const results = [];
+
+  for (const [name, cfg] of Object.entries(sellers)) {
+    const sellerEOA = getSigner(cfg.key, provider);
+    const sellerAA  = aaAddress(sdk, sellerEOA.address);
+
+    let repData = { tier: "Unknown", successRatePct: 0, settled: 0, slashed: 0, bondPYUSD: "0" };
+    try {
+      const rep = (await c.reputation.summary(sellerAA)) as [bigint, bigint, bigint, bigint, number];
+      repData = {
+        tier:           TIER_LABEL[rep[4]] ?? "Unknown",
+        successRatePct: Number(rep[0]) / 100,
+        settled:        Number(rep[1]),
+        slashed:        Number(rep[2]),
+        bondPYUSD:      fmt(rep[3]),
+      };
+    } catch { /* seller not yet on-chain */ }
+
+    results.push({
+      name,
+      service:   cfg.service,
+      proofType: cfg.proofType,
+      passport:  sellerAA,
+      url:       cfg.url,
+      ...repData,
+    });
+  }
+
+  return results;
+}
+
+async function toolCheckBuyerWallet(
+  buyerAA: string,
+  provider: ethers.JsonRpcProvider,
+) {
+  const c       = getContracts(provider);
+  const balance = (await c.pyusd.balanceOf(buyerAA)) as bigint;
+  const allow   = (await c.pyusd.allowance(buyerAA, process.env.ESCROW_ADDRESS!)) as bigint;
+  return {
+    passport:              buyerAA,
+    balancePYUSD:          fmt(balance),
+    escrowAllowancePYUSD:  fmt(allow),
+  };
+}
+
+async function toolSendSmsViaX402(
+  args: { sellerName: string; to: string; message: string },
+  sellers:  Record<string, SellerConfig>,
+  buyerEOA: ethers.Wallet,
+  buyerAA:  string,
+  sdk:      ReturnType<typeof makeSDK>,
+  provider: ethers.JsonRpcProvider,
+) {
+  const cfg = sellers[args.sellerName];
+  if (!cfg) return { success: false, error: `Unknown seller '${args.sellerName}'. Use list_sellers first.` };
+
+  const c          = getContracts(provider);
+  const sellerEOA  = getSigner(cfg.key, provider);
+  const sellerAA   = aaAddress(sdk, sellerEOA.address);
+  const MAX_APPROVE = ethers.parseUnits("10", 18);
+  const PAYMENT    = ethers.parseUnits("0.001", 18);
+
+  // ── 1. Auto top-up buyer AA if balance is low ───────────────────────────────
+  const pyusdBal = (await c.pyusd.balanceOf(buyerAA)) as bigint;
+  if (pyusdBal < PAYMENT) {
+    const topUp    = ethers.parseUnits("0.01", 18);
+    const eoaBal   = (await c.pyusd.balanceOf(buyerEOA.address)) as bigint;
+    const source   = eoaBal >= topUp ? buyerEOA : (
+      (await c.pyusd.balanceOf(sellerEOA.address) as bigint) >= topUp ? sellerEOA : null
+    );
+    if (!source) return { success: false, error: `Buyer AA has ${fmt(pyusdBal)} PYUSD and no funded EOA to top up from.` };
+
+    await emit({ kind: "reasoning", content: `Buyer AA balance low (${fmt(pyusdBal)} PYUSD) — topping up 0.01 PYUSD from ${source === buyerEOA ? "buyer" : "seller"} EOA…` });
+    const tx = await (c.pyusd.connect(source) as typeof c.pyusd).transfer(buyerAA, topUp);
+    await tx.wait();
+  }
+
+  // ── 2. Ensure escrow allowance ────────────────────────────────────────────
+  const allowance = (await c.pyusd.allowance(buyerAA, process.env.ESCROW_ADDRESS!)) as bigint;
+  if (allowance < PAYMENT) {
+    await emit({ kind: "reasoning", content: `Approving Escrow to spend up to 10 PYUSD via AA UserOp (gasless)…` });
+    const approveCD = encodeCall(
+      "function approve(address spender, uint256 amount) returns (bool)",
+      [process.env.ESCROW_ADDRESS!, MAX_APPROVE],
+    );
+    const approveResult = await emitAction("approve-escrow", "PYUSD.approve(Escrow, 10 PYUSD)", () =>
+      aaSend(sdk, buyerEOA, process.env.PYUSD_ADDRESS!, approveCD),
+    );
+    await emit({
+      kind: "action",
+      actionId: "approve-escrow",
+      actionLabel: "PYUSD.approve(Escrow, 10 PYUSD)",
+      actionStatus: "confirmed",
+      txHash: approveResult.txHash,
+      blockNumber: approveResult.blockNumber,
+    });
+  }
+
+  // ── 3. x402 round 1: get payment challenge ────────────────────────────────
+  await emit({ kind: "reasoning", content: `x402 round 1 → ${cfg.url} (expecting 402 challenge)…` });
+
+  const r1 = await fetch(cfg.url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to: args.to, message: args.message }),
+  });
+  const d1 = await r1.json() as X402Challenge | { error: string };
+
+  if (r1.status !== 402) {
+    return { success: false, error: `Expected 402, got ${r1.status}: ${JSON.stringify(d1)}` };
+  }
+
+  const challenge = d1 as X402Challenge;
+  await emit({
+    kind: "reasoning",
+    content: `402 challenge received — seller passport ${challenge.sellerPassport.slice(0,10)}…  amount ${fmt(BigInt(challenge.amount))} PYUSD  deadline T+${challenge.deadlineOffset}s`,
+  });
+
+  // ── 4. Build paymentId + payment headers ──────────────────────────────────
+  const block     = await provider.getBlock("latest");
+  const deadline  = BigInt(block!.timestamp) + BigInt(challenge.deadlineOffset);
+  const amount    = BigInt(challenge.amount);
+  const nonce     = ethers.randomBytes(32);
+  const paymentId = makePaymentId(buyerAA, sellerAA, amount, deadline, nonce);
+
+  await emit({
+    kind: "reasoning",
+    content: `paymentId = ${paymentId}\nConstructed from keccak256(buyerAA, sellerAA, ${fmt(amount)} PYUSD, deadline, nonce).`,
+  });
+
+  const headers = buildPaymentHeaders(paymentId, nonce, buyerAA, amount, deadline);
+
+  // ── 5. x402 round 2: send payment auth ───────────────────────────────────
+  await emit({ kind: "reasoning", content: `x402 round 2 → sending payment authorisation to seller…` });
+
+  const r2 = await fetch(cfg.url, {
     method:  "POST",
     headers: { "Content-Type": "application/json", ...headers },
-    body:    JSON.stringify(body),
+    body:    JSON.stringify({ to: args.to, message: args.message }),
   });
-  const data = await res.json() as T;
-  return { status: res.status, data };
+  const d2 = await r2.json() as X402Settlement | { error: string; code?: string };
+
+  if (r2.status !== 200) {
+    const err = d2 as { error: string; code?: string };
+    return { success: false, error: `Seller returned ${r2.status}: ${err.error}`, code: err.code };
+  }
+
+  const settlement = d2 as X402Settlement;
+
+  // ── 6. Verify on-chain ────────────────────────────────────────────────────
+  await emit({ kind: "reasoning", content: `Verifying escrow.settled on-chain for paymentId ${paymentId.slice(0, 18)}…` });
+  const [, , , , isSettled] = (await c.escrow.getEscrowRecord(paymentId)) as [string, string, bigint, bigint, boolean, boolean];
+
+  if (!isSettled) {
+    return { success: false, error: "Escrow not marked settled after quittance post — unexpected state." };
+  }
+
+  // ── 7. Emit quittance receipt ─────────────────────────────────────────────
+  await emit({
+    kind: "quittance",
+    receipt: {
+      paymentId,
+      seller:      args.sellerName,
+      adapter:     cfg.proofType,
+      amount:      fmt(amount),
+      status:      "SETTLED",
+      txHash:      settlement.quittanceTx,
+      blockNumber: settlement.blockNumber,
+    },
+  });
+
+  const successes = (await c.registry.successCount(sellerAA)) as bigint;
+
+  return {
+    success:     true,
+    result:      settlement.result,
+    paymentId,
+    quittanceTx: settlement.quittanceTx,
+    blockNumber: settlement.blockNumber,
+    sellerSuccessCount: Number(successes),
+    note: "Escrow settled and quittance posted on-chain. Buyer paid zero KITE in gas.",
+  };
 }
 
 // ─── Agent loop ───────────────────────────────────────────────────────────────
@@ -51,200 +342,95 @@ async function postJSON<T>(url: string, body: unknown, headers: Record<string, s
 async function run(task: string) {
   await emit({ kind: "user", content: task });
 
-  const provider = getProvider();
-  const network  = await provider.getNetwork();
-
-  // ── Passports ───────────────────────────────────────────────────────────────
-  const buyerKey  = process.env.BUYER_PRIVATE_KEY!;
-  const sellerKey = process.env.SELLER_SMS_PRO_PRIVATE_KEY!;
-  if (!buyerKey || !sellerKey) {
-    await emit({ kind: "error", content: "BUYER_PRIVATE_KEY / SELLER_SMS_PRO_PRIVATE_KEY not set" });
+  const provider  = getProvider();
+  const buyerKey  = process.env.BUYER_PRIVATE_KEY;
+  if (!buyerKey) {
+    await emit({ kind: "error", content: "BUYER_PRIVATE_KEY not set in .env" });
+    return;
+  }
+  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.startsWith("sk-...")) {
+    await emit({ kind: "error", content: "OPENAI_API_KEY not set. Add your key to quittance-agents/.env" });
     return;
   }
 
-  const buyerEOA  = getSigner(buyerKey, provider);
-  const sellerEOA = getSigner(sellerKey, provider);
-  const sdk       = makeSDK();
-  const buyerAA   = aaAddress(sdk, buyerEOA.address);
-  const sellerAA  = aaAddress(sdk, sellerEOA.address);
+  const buyerEOA = getSigner(buyerKey, provider);
+  const sdk      = makeSDK();
+  const buyerAA  = aaAddress(sdk, buyerEOA.address);
+  const sellers  = buildSellerRegistry();
 
-  // ── Reasoning: provider selection ───────────────────────────────────────────
-  const c = getContracts(provider);
-  const [rep] = (await Promise.all([
-    c.reputation.summary(sellerAA),
-  ])) as [readonly [bigint, bigint, bigint, bigint, number]];
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user",   content: task },
+  ];
 
-  const successBps = rep[0];
-  const settled    = rep[1];
-  const activeBond = rep[3];
-  const tierNum    = rep[4];
-  const tierLabel  = ["Bronze", "Silver", "Gold"][tierNum] ?? "Unknown";
+  // ── LLM tool-calling loop ─────────────────────────────────────────────────
+  for (let turn = 0; turn < 10; turn++) {
+    const response = await openai.chat.completions.create({
+      model:       "gpt-4o-mini",
+      messages,
+      tools:       TOOLS,
+      tool_choice: "auto",
+    });
 
-  await emit({
-    kind: "reasoning",
-    content: `Querying QuittanceRegistry for SMS sellers on Kite testnet (chainId=${network.chainId})…`,
-  });
-  await sleep(300);
-  await emit({
-    kind: "reasoning",
-    content: `Found sms.kite — ${tierLabel} tier, ${Number(successBps) / 100}% success rate, ${fmt(activeBond)} PYUSD bond, ${settled} completed quittances.`,
-  });
-  await sleep(300);
-  await emit({
-    kind: "reasoning",
-    content: `sms.kite selected. Bond (${fmt(activeBond)} PYUSD) far exceeds payment (0.001 PYUSD). If delivery fails, bond is slashable and I get refunded. Risk is bounded.`,
-  });
-  await sleep(200);
+    const msg = response.choices[0].message;
+    messages.push(msg);
 
-  // ── Step 1: Ensure buyer AA has approved Escrow ──────────────────────────────
-  const allowance = (await c.pyusd.allowance(buyerAA, process.env.ESCROW_ADDRESS!)) as bigint;
-  const pyusdBal  = (await c.pyusd.balanceOf(buyerAA)) as bigint;
+    // Emit any text the model produced
+    if (msg.content?.trim()) {
+      await emit({ kind: "agent", content: msg.content.trim() });
+    }
 
-  await emit({
-    kind: "reasoning",
-    content: `Buyer passport ${buyerAA.slice(0,10)}… has ${fmt(pyusdBal)} PYUSD. Escrow allowance: ${fmt(allowance)}.`,
-  });
+    // No tool calls → model is done
+    if (!msg.tool_calls?.length) break;
 
-  // Auto-fund buyer AA from EOA if balance is low (EOA is the source of truth)
-  if (pyusdBal < ethers.parseUnits("0.001", 18)) {
-    const eoa_bal = (await c.pyusd.balanceOf(buyerEOA.address)) as bigint;
-    const topUp   = ethers.parseUnits("0.01", 18); // fund 10× the payment amount
-    if (eoa_bal < topUp) {
-      // Try to pull from seller/deployer EOA as emergency fallback
-      const sellerEOAPyusd = (await c.pyusd.balanceOf(sellerEOA.address)) as bigint;
-      if (sellerEOAPyusd >= topUp) {
-        await emit({ kind: "reasoning", content: `Buyer EOA also low — topping up buyer AA from seller/deployer EOA (${fmt(topUp)} PYUSD)…` });
-        const tx = await (c.pyusd.connect(sellerEOA) as typeof c.pyusd).transfer(buyerAA, topUp);
-        await tx.wait();
-      } else {
-        await emit({ kind: "error", content: `Buyer AA has ${fmt(pyusdBal)} PYUSD and no EOA source to top up from. Fund ${buyerAA} with PYUSD first.` });
-        return;
+    // Execute each tool call
+    for (const _tc of msg.tool_calls) {
+      // The OpenAI SDK union includes CustomToolCall which lacks .function —
+      // we only ever receive standard function calls, so cast safely.
+      const tc = _tc as OpenAI.Chat.ChatCompletionMessageToolCall & {
+        function: { name: string; arguments: string };
+      };
+
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(tc.function.arguments); } catch { /**/ }
+
+      // Show the model's decision
+      const argStr = Object.keys(args).length
+        ? Object.entries(args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")
+        : "";
+      await emit({
+        kind:    "reasoning",
+        content: `→ ${tc.function.name}(${argStr})`,
+      });
+
+      let result: unknown;
+      try {
+        switch (tc.function.name) {
+          case "list_sellers":
+            result = await toolListSellers(sellers, provider, sdk);
+            break;
+          case "check_buyer_wallet":
+            result = await toolCheckBuyerWallet(buyerAA, provider);
+            break;
+          case "send_sms_via_x402":
+            result = await toolSendSmsViaX402(
+              args as { sellerName: string; to: string; message: string },
+              sellers, buyerEOA, buyerAA, sdk, provider,
+            );
+            break;
+          default:
+            result = { error: `Unknown tool: ${tc.function.name}` };
+        }
+      } catch (err: any) {
+        result = { error: err.reason ?? err.shortMessage ?? err.message ?? String(err) };
       }
-    } else {
-      await emit({ kind: "reasoning", content: `Buyer AA is out of PYUSD — transferring ${fmt(topUp)} from buyer EOA → buyer AA…` });
-      const tx = await (c.pyusd.connect(buyerEOA) as typeof c.pyusd).transfer(buyerAA, topUp);
-      await tx.wait();
+
+      messages.push({
+        role:         "tool",
+        tool_call_id: tc.id,
+        content:      JSON.stringify(result),
+      });
     }
-    await emit({ kind: "reasoning", content: `Buyer AA topped up. Continuing with payment.` });
-  }
-
-  if (allowance < ethers.parseUnits("0.001", 18)) {
-    await emit({
-      kind: "reasoning",
-      content: `Allowance insufficient — submitting PYUSD.approve(Escrow, 10 PYUSD) via AA UserOperation (gasless).`,
-    });
-
-    const approveCD = encodeCall(
-      "function approve(address spender, uint256 amount) returns (bool)",
-      [process.env.ESCROW_ADDRESS!, MAX_APPROVE],
-    );
-    const result = await emitAction("approve-escrow", "PYUSD.approve(Escrow, 10 PYUSD)", async () => {
-      return aaSend(sdk, buyerEOA, process.env.PYUSD_ADDRESS!, approveCD);
-    });
-    await emit({
-      kind: "action",
-      actionId: "approve-escrow",
-      actionLabel: "PYUSD.approve(Escrow, 10 PYUSD)",
-      actionStatus: "confirmed",
-      txHash: result.txHash,
-      blockNumber: result.blockNumber,
-      userOpHash: result.userOpHash,
-    });
-  } else {
-    await emit({
-      kind: "reasoning",
-      content: `Escrow allowance already sufficient (${fmt(allowance)} PYUSD) — no approval needed.`,
-    });
-  }
-
-  // ── Step 2: x402 round 1 — get payment challenge ────────────────────────────
-  await emit({
-    kind: "reasoning",
-    content: `Initiating x402 request → ${SELLER_URL} (no payment yet — expect 402 challenge)…`,
-  });
-
-  const to = task.match(/\+[\d\s\-().]+/)?.at(0)?.trim() ?? "+1-555-0192";
-  const { status: s1, data: d1 } = await postJSON<X402Challenge | { error: string }>(SELLER_URL, { to, message: task });
-
-  if (s1 !== 402) {
-    await emit({ kind: "error", content: `Expected 402 but got ${s1}: ${JSON.stringify(d1)}` });
-    return;
-  }
-
-  const challenge = d1 as X402Challenge;
-  await emit({
-    kind: "reasoning",
-    content: `402 Payment Required. Seller passport: ${challenge.sellerPassport.slice(0,10)}…  Amount: ${fmt(BigInt(challenge.amount))} PYUSD  Deadline: T+${challenge.deadlineOffset}s.`,
-  });
-
-  // ── Step 3: Construct paymentId + payment auth ────────────────────────────────
-  const block    = await provider.getBlock("latest");
-  const deadline = BigInt(block!.timestamp) + BigInt(challenge.deadlineOffset);
-  const amount   = BigInt(challenge.amount);
-  const nonce    = ethers.randomBytes(32);
-  const paymentId = makePaymentId(buyerAA, sellerAA, amount, deadline, nonce);
-
-  await emit({
-    kind: "reasoning",
-    content: `Constructing paymentId: keccak256(buyerAA, sellerAA, ${fmt(amount)} PYUSD, T+${challenge.deadlineOffset}s, nonce).\n  paymentId = ${paymentId}`,
-  });
-
-  const paymentHeaders = buildPaymentHeaders(paymentId, nonce, buyerAA, amount, deadline);
-
-  await emit({
-    kind: "agent",
-    content: `Sending payment authorisation to sms.kite. The seller will open escrow (pulling ${fmt(amount)} PYUSD from my passport), deliver the SMS, and post an ORACLE quittance — at which point escrow releases. If no proof appears before the deadline, I can reclaim my PYUSD.`,
-  });
-
-  // ── Step 4: x402 round 2 — send payment headers ──────────────────────────────
-  await emit({ kind: "reasoning", content: `Retrying POST with X-Payment-* headers…` });
-
-  const { status: s2, data: d2 } = await postJSON<X402Settlement | { error: string; code?: string }>(
-    SELLER_URL,
-    { to, message: task },
-    paymentHeaders,
-  );
-
-  if (s2 !== 200) {
-    const err = d2 as { error: string; code?: string };
-    if (err.code === "INSUFFICIENT_ALLOWANCE") {
-      await emit({ kind: "error", content: `Seller rejected: buyer allowance too low. Run npm run integration first to pre-approve.` });
-    } else if (err.code === "INSUFFICIENT_BALANCE") {
-      await emit({ kind: "error", content: `Seller rejected: ${err.error}` });
-    } else {
-      await emit({ kind: "error", content: `Seller error ${s2}: ${err.error}` });
-    }
-    return;
-  }
-
-  const settlement = d2 as X402Settlement;
-
-  // ── Step 5: Verify on-chain ────────────────────────────────────────────────
-  await emit({ kind: "reasoning", content: `Settlement claimed. Verifying escrow.settled on-chain…` });
-
-  const [, , , , settled1] = (await c.escrow.getEscrowRecord(paymentId)) as [string, string, bigint, bigint, boolean, boolean];
-  const successes = (await c.registry.successCount(sellerAA)) as bigint;
-
-  // ── Step 6: Emit quittance ─────────────────────────────────────────────────
-  if (settled1) {
-    await emit({
-      kind: "quittance",
-      receipt: {
-        paymentId,
-        seller:    "sms.kite",
-        adapter:   "ORACLE",
-        amount:    fmt(amount),
-        status:    "SETTLED",
-        txHash:    settlement.quittanceTx,
-        blockNumber: settlement.blockNumber,
-      },
-    });
-    await emit({
-      kind: "agent",
-      content: `Done. "${settlement.result}" — verified on-chain at block ${settlement.blockNumber}. sms.kite now has ${successes} successful quittances on record. I paid zero KITE in gas.`,
-    });
-  } else {
-    await emit({ kind: "error", content: `Escrow not settled after quittance post — unexpected state.` });
   }
 
   await emit({ kind: "done" });
@@ -253,11 +439,13 @@ async function run(task: string) {
 // ─── CLI entry ────────────────────────────────────────────────────────────────
 
 async function main() {
-  const args = process.argv.slice(2);
+  const args    = process.argv.slice(2);
   const taskIdx = args.indexOf("--task");
-  const task = taskIdx >= 0 ? args[taskIdx + 1] : "Send an SMS alert to +1-555-0192 about a KITE price movement.";
+  const task    = taskIdx >= 0
+    ? args[taskIdx + 1]
+    : "Send an SMS alert to +1-555-0192 about a KITE price movement.";
 
-  console.log("\n── Quittance Buyer Agent ─────────────────────────────────\n");
+  console.log("\n── Quittance Buyer Agent (GPT-4o mini) ───────────────────\n");
   console.log(`Task: ${task}\n`);
 
   try {

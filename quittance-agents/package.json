@@ -3,21 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "preflight":    "tsx scripts/preflight.ts",
-    "setup":        "tsx scripts/setup-agents.ts",
-    "smoke":        "tsx scripts/e2e-smoke.ts",
-    "integration":  "tsx scripts/integration.ts",
-    "seller-sms":   "tsx scripts/seller-sms.ts",
-    "buyer-agent":  "tsx scripts/buyer-agent.ts"
+    "preflight": "tsx scripts/preflight.ts",
+    "setup": "tsx scripts/setup-agents.ts",
+    "smoke": "tsx scripts/e2e-smoke.ts",
+    "integration": "tsx scripts/integration.ts",
+    "seller-sms": "tsx scripts/seller-sms.ts",
+    "buyer-agent": "tsx scripts/buyer-agent.ts"
   },
   "dependencies": {
+    "dotenv": "^16.4.0",
     "ethers": "^6.13.0",
     "gokite-aa-sdk": "latest",
-    "dotenv": "^16.4.0"
+    "openai": "^6.38.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.5.0",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.5.0"
   }
 }
