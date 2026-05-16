@@ -11,6 +11,9 @@ const NAV = [
   { href: "/#adapters", label: "Adapters" },
   { href: "/#sdk", label: "SDK" },
   { href: "/#passports", label: "Passports" },
+  { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/feed", label: "Feed" },
+  { href: "/workspace", label: "Workspace" },
 ];
 
 export function SiteChrome({ children }: { children: React.ReactNode }) {
@@ -30,6 +33,11 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [mobileOpen]);
+
+  // Workspace gets its own full-viewport layout — no chrome wrapper
+  if (pathname?.startsWith("/workspace")) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="relative flex min-h-screen flex-col">
