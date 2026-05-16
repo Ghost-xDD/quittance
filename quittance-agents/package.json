@@ -6,7 +6,9 @@
     "preflight":    "tsx scripts/preflight.ts",
     "setup":        "tsx scripts/setup-agents.ts",
     "smoke":        "tsx scripts/e2e-smoke.ts",
-    "integration":  "tsx scripts/integration.ts"
+    "integration":  "tsx scripts/integration.ts",
+    "seller-sms":   "tsx scripts/seller-sms.ts",
+    "buyer-agent":  "tsx scripts/buyer-agent.ts"
   },
   "dependencies": {
     "ethers": "^6.13.0",

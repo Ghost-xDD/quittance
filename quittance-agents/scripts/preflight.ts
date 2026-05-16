@@ -56,8 +56,8 @@ async function main() {
   // ── Print balances ─────────────────────────────────────────────────────────
   const [buyerKite,  buyerPyusd]  = await Promise.all([provider.getBalance(buyer.address),  c.pyusd.balanceOf(buyer.address)]);
   const [sellerKite, sellerPyusd] = await Promise.all([provider.getBalance(seller.address), c.pyusd.balanceOf(seller.address)]);
-  const sellerBond = await c.bond.bonds(seller.address);
-  const minBond    = await c.bond.MIN_BOND();
+  const sellerBond = (await c.bond.bonds(seller.address)) as bigint;
+  const minBond    = (await c.bond.MIN_BOND()) as bigint;
 
   console.log("── Balances ──────────────────────────────────────");
   console.log(`Buyer  (${buyer.address})`);

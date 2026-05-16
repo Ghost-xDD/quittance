@@ -79,12 +79,22 @@ async function executeTrade(
 ): Promise<X402Settlement> {
   const c = getContracts(provider);
 
-  // ── Verify buyer allowance ─────────────────────────────────────────────────
-  const allowance = (await c.pyusd.allowance(buyerAA, process.env.ESCROW_ADDRESS!)) as bigint;
+  // ── Verify buyer allowance + balance ──────────────────────────────────────
+  const [allowance, buyerBal] = (await Promise.all([
+    c.pyusd.allowance(buyerAA, process.env.ESCROW_ADDRESS!),
+    c.pyusd.balanceOf(buyerAA),
+  ])) as [bigint, bigint];
+
   if (allowance < amount) {
     throw Object.assign(
-      new Error(`Buyer allowance too low: ${fmt(allowance)} < ${fmt(amount)}`),
+      new Error(`Buyer allowance too low: ${fmt(allowance)} < ${fmt(amount)} PYUSD`),
       { code: "INSUFFICIENT_ALLOWANCE" },
+    );
+  }
+  if (buyerBal < amount) {
+    throw Object.assign(
+      new Error(`Buyer AA balance too low: ${fmt(buyerBal)} < ${fmt(amount)} PYUSD — fund ${buyerAA}`),
+      { code: "INSUFFICIENT_BALANCE" },
     );
   }
 
@@ -93,7 +103,7 @@ async function executeTrade(
   if (expectedId.toLowerCase() !== paymentId.toLowerCase()) {
     throw Object.assign(new Error("paymentId mismatch"), { code: "BAD_PAYMENT_ID" });
   }
-  log("verify", `paymentId ✓  buyer allowance ${fmt(allowance)} PYUSD ✓`);
+  log("verify", `paymentId ✓  buyer balance ${fmt(buyerBal)} PYUSD  allowance ${fmt(allowance)} PYUSD ✓`);
 
   // ── Open escrow (seller AA UserOp) ─────────────────────────────────────────
   log("escrow", `opening escrow via seller AA…`);
@@ -245,11 +255,13 @@ async function main() {
       log("req", `✓ settled  taskId=${settlement.taskId}`);
       json(res, 200, settlement);
     } catch (err: any) {
-      log("req", `✗ error: ${err.message}`);
-      json(res, err.code === "INSUFFICIENT_ALLOWANCE" ? 402 : 500, {
-        error: err.message,
-        code: err.code ?? "INTERNAL_ERROR",
-      });
+      // Extract the most useful error message from ethers revert data
+      const reason = err.reason ?? err.shortMessage ?? err.message ?? "unknown error";
+      const code   = err.code ?? "INTERNAL_ERROR";
+      log("req", `✗ ${code}: ${reason}`);
+      const httpStatus =
+        code === "INSUFFICIENT_ALLOWANCE" || code === "INSUFFICIENT_BALANCE" ? 402 : 500;
+      json(res, httpStatus, { error: reason, code });
     }
   });
 

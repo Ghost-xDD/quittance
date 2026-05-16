@@ -11,6 +11,7 @@ import type {
   QuittanceStatus,
   ScriptStep,
 } from "./types";
+import type { AgentEvent } from "@/lib/agent-event-types";
 
 /* ─── Demo script ─────────────────────────────────────────────── */
 
@@ -309,6 +310,8 @@ function QuittanceMessage({ msg }: { msg: ChatMessage }) {
 
 /* ─── Chat input bar ─────────────────────────────────────────── */
 
+// Live mode is the default. Set NEXT_PUBLIC_DEMO_AUTO_START=true to force the
+// scripted demo on mount (useful when no buyer-agent process is running).
 const DEMO_AUTO_START = process.env.NEXT_PUBLIC_DEMO_AUTO_START === "true";
 
 interface ChatInputProps {
@@ -316,9 +319,10 @@ interface ChatInputProps {
   onRunDemo: () => void;
   running: boolean;
   disabled: boolean;
+  isLive: boolean;
 }
 
-function ChatInput({ onSend, onRunDemo, running, disabled }: ChatInputProps) {
+function ChatInput({ onSend, onRunDemo, running, disabled, isLive }: ChatInputProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -359,7 +363,7 @@ function ChatInput({ onSend, onRunDemo, running, disabled }: ChatInputProps) {
           onChange={autosize}
           onKeyDown={onKey}
           disabled={disabled}
-          placeholder="Message the buyer agent… (or use the demo script)"
+          placeholder={isLive ? "Message the buyer agent…" : "Message buyer agent (or press ▶ Demo to simulate)"}
           rows={1}
           className="flex-1 resize-none bg-transparent text-[13.5px] leading-relaxed text-print placeholder:text-print-ghost focus:outline-none"
           style={{ minHeight: "24px", maxHeight: "160px" }}
@@ -396,6 +400,76 @@ function ChatInput({ onSend, onRunDemo, running, disabled }: ChatInputProps) {
   );
 }
 
+/* ─── SSE live stream hook ───────────────────────────────────── */
+
+function useLiveStream(
+  onEvent: (ev: AgentEvent) => void,
+  onConnected: (live: boolean) => void,
+) {
+  useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+    const es = new EventSource("/api/agent-stream");
+
+    es.onopen = () => onConnected(true);
+    es.onerror = () => onConnected(false);
+
+    es.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data) as AgentEvent;
+        if (ev.kind === "connected") { onConnected(true); return; }
+        onEvent(ev);
+      } catch { /**/ }
+    };
+
+    return () => { es.close(); onConnected(false); };
+  }, []); // eslint-disable-line
+}
+
+/* ─── Map AgentEvent → ChatMessage ──────────────────────────── */
+
+function eventToMsg(ev: AgentEvent): ChatMessage | null {
+  const id = mkId();
+  const ts = ev.timestamp ?? Date.now();
+  switch (ev.kind) {
+    case "user":
+      return { id, role: "user", content: ev.content ?? "", timestamp: ts };
+    case "reasoning":
+      return { id, role: "reasoning", content: ev.content ?? "", timestamp: ts };
+    case "agent":
+      return { id, role: "agent", content: ev.content ?? "", timestamp: ts };
+    case "action":
+      return {
+        id: ev.actionId ?? id,
+        role: "action",
+        content: ev.content ?? "",
+        timestamp: ts,
+        actionStatus: ev.actionStatus,
+        actionLabel: ev.actionLabel,
+        txHash: ev.txHash,
+        blockNumber: ev.blockNumber,
+      };
+    case "quittance":
+      if (!ev.receipt) return null;
+      return {
+        id,
+        role: "quittance",
+        content: "",
+        timestamp: ts,
+        receipt: {
+          paymentId:   ev.receipt.paymentId,
+          seller:      ev.receipt.seller,
+          adapter:     ev.receipt.adapter as ProofType,
+          amount:      Number(ev.receipt.amount),
+          status:      ev.receipt.status as QuittanceStatus,
+          txHash:      ev.receipt.txHash,
+          blockNumber: ev.receipt.blockNumber,
+        },
+      };
+    default:
+      return null;
+  }
+}
+
 /* ─── Main AgentChat component ────────────────────────────────── */
 
 function mkId() {
@@ -408,7 +482,7 @@ function mkMsg(role: MessageRole, content: string, extra?: Partial<ChatMessage>)
 
 const WELCOME: ChatMessage = mkMsg(
   "agent",
-  "Hello. I'm your Quittance buyer agent — I negotiate, escrow, and verify service delivery for you on Kite testnet. Every payment is atomic: you only pay when proof of delivery is on-chain.\n\nType a task, or press ▶ Demo to run a live walkthrough of the Exec-Pay-Deliver cycle.",
+  "Hello. I'm your Quittance buyer agent. Every payment is atomic — you only pay when proof of delivery is on-chain.\n\nWaiting for a live session. Start the buyer agent with:\n\n  npm run buyer-agent\n\nOr press ▶ Demo for a scripted walkthrough without running the full stack.",
 );
 
 interface AgentChatProps {
@@ -419,8 +493,50 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME]);
   const [running, setRunning] = useState(false);
   const [lastMsgStreaming, setLastMsgStreaming] = useState(false);
+  const [isLive, setIsLive] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stoppedRef = useRef(false);
+
+  // ── Live SSE stream from buyer-agent process ───────────────────
+  const handleLiveEvent = useCallback((ev: AgentEvent) => {
+    if (ev.kind === "action" && (ev.actionStatus === "confirmed" || ev.actionStatus === "failed") && ev.actionId) {
+      // Update the existing pending action message
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.role === "action" && m.id === ev.actionId
+            ? { ...m, actionStatus: ev.actionStatus, txHash: ev.txHash, blockNumber: ev.blockNumber }
+            : m
+        )
+      );
+      return;
+    }
+
+    const msg = eventToMsg(ev);
+    if (!msg) return;
+
+    if (ev.kind === "user") {
+      // New live session — reset chat
+      setMessages([WELCOME, msg]);
+    } else {
+      setMessages((prev) => [...prev, msg]);
+    }
+
+    // Bubble quittance to feed panel
+    if (ev.kind === "quittance" && ev.receipt && onQuittanceEvent) {
+      onQuittanceEvent({
+        id:        mkId(),
+        paymentId: ev.receipt.paymentId,
+        timestamp: Date.now(),
+        seller:    ev.receipt.seller,
+        adapter:   ev.receipt.adapter as ProofType,
+        amount:    Number(ev.receipt.amount),
+        status:    ev.receipt.status as QuittanceStatus,
+        txHash:    ev.receipt.txHash,
+      });
+    }
+  }, [onQuittanceEvent]);
+
+  useLiveStream(handleLiveEvent, setIsLive);
 
   function scrollToBottom() {
     requestAnimationFrame(() => {
@@ -528,13 +644,22 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
           </span>
         </div>
         <div className="num flex items-center gap-3 text-[10px] uppercase tracking-[0.2em] text-print-ghost">
-          {running && (
+          {isLive && (
+            <span className="flex items-center gap-1.5 text-sage">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="absolute inset-0 animate-ping rounded-full bg-sage opacity-50" />
+                <span className="relative h-1.5 w-1.5 rounded-full bg-sage" />
+              </span>
+              live
+            </span>
+          )}
+          {running && !isLive && (
             <span className="flex items-center gap-1.5 text-seal">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="absolute inset-0 animate-ping rounded-full bg-seal opacity-50" />
                 <span className="relative h-1.5 w-1.5 rounded-full bg-seal" />
               </span>
-              agent running
+              demo running
             </span>
           )}
           <span className="hidden text-print-ghost md:inline">Exec-Pay-Deliver</span>
@@ -576,6 +701,7 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
         onRunDemo={runDemoScript}
         running={running}
         disabled={false}
+        isLive={isLive}
       />
     </div>
   );
