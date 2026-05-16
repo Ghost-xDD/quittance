@@ -12,11 +12,12 @@ import { GokiteAASDK } from "gokite-aa-sdk";
 // Fixed salt so every EOA always maps to the same AA wallet.
 export const AA_SALT = 0n;
 
-const KITE_RPC    = process.env.KITE_RPC_URL    ?? "https://rpc-testnet.gokite.ai";
-const BUNDLER_URL = process.env.KITE_BUNDLER_URL ?? "https://bundler-service.staging.gokite.ai/rpc/";
+const NETWORK     = process.env.KITE_NETWORK    ?? "kite_mainnet";
+const KITE_RPC    = process.env.KITE_RPC_URL    ?? "https://rpc.gokite.ai";
+const BUNDLER_URL = process.env.KITE_BUNDLER_URL ?? "https://bundler-service.prod.gokite.ai/rpc/";
 
 export function makeSDK(): GokiteAASDK {
-  return new GokiteAASDK("kite_testnet", KITE_RPC, BUNDLER_URL);
+  return new GokiteAASDK(NETWORK, KITE_RPC, BUNDLER_URL);
 }
 
 /** Derive the deterministic AA (smart-account) address for a given EOA. */

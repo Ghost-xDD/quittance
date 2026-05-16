@@ -8,7 +8,9 @@
     "smoke": "tsx scripts/e2e-smoke.ts",
     "integration": "tsx scripts/integration.ts",
     "seller-sms": "tsx scripts/seller-sms.ts",
-    "buyer-agent": "tsx scripts/buyer-agent.ts"
+    "buyer-agent": "tsx scripts/buyer-agent.ts",
+    "setup-mainnet": "tsx scripts/setup-mainnet.ts",
+    "transfer-kite": "tsx scripts/transfer-kite.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.0",

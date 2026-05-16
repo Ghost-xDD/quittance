@@ -100,8 +100,10 @@ export function getSigner(
 export function getContracts(provider: ethers.JsonRpcProvider | ethers.Signer) {
   const e = (addr: string, abi: string[]) =>
     new ethers.Contract(addr, abi, provider);
+  const tokenAddr = process.env.USDC_ADDRESS ?? process.env.PYUSD_ADDRESS!;
   return {
-    pyusd: e(process.env.PYUSD_ADDRESS!, ERC20_ABI),
+    pyusd: e(tokenAddr, ERC20_ABI),   // named pyusd for back-compat, now USDC on mainnet
+    usdc:  e(tokenAddr, ERC20_ABI),
     bond: e(process.env.BOND_ADDRESS!, BOND_ABI),
     escrow: e(process.env.ESCROW_ADDRESS!, ESCROW_ABI),
     registry: e(process.env.REGISTRY_ADDRESS!, REGISTRY_ABI),
@@ -111,7 +113,10 @@ export function getContracts(provider: ethers.JsonRpcProvider | ethers.Signer) {
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
 
-export function fmt(amount: bigint, decimals = 18): string {
+// USDC on mainnet = 6 decimals; PYUSD on testnet = 18 decimals
+const TOKEN_DECIMALS = parseInt(process.env.TOKEN_DECIMALS ?? "6");
+
+export function fmt(amount: bigint, decimals = TOKEN_DECIMALS): string {
   return ethers.formatUnits(amount, decimals);
 }
 

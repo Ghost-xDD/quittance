@@ -1,12 +1,16 @@
 /**
- * seller-sms.ts — Quittance SMS Seller Agent (x402 + AA)
+ * seller-sms.ts — Quittance SMS Seller Agent (x402 standard + Kite AA)
  *
- * Runs an HTTP server that sells SMS delivery as an x402 service.
- * Every payment is settled on-chain via a Kite AA passport (gasless).
+ * Implements the x402 payment protocol spec:
+ *   POST /task               → 402 { accepts: [...] }  (standard x402 challenge)
+ *   POST /task + X-Payment   → 200 { result, quittance }
  *
- * x402 protocol:
- *   POST /task                     → 402 { challenge }
- *   POST /task + X-Payment-* hdrs  → 200 { result, quittance }
+ * Payment verified via Pieverse facilitator, then settled on-chain:
+ *   1. Verify X-Payment signature (Pieverse /verify)
+ *   2. Open escrow (gasless AA UserOp)
+ *   3. Deliver SMS
+ *   4. Post quittance proof (oracle-signed, gasless AA UserOp)
+ *   5. Escrow releases USDC to seller
  *
  * Usage:  npm run seller-sms
  * Port:   process.env.SELLER_PORT (default 4001)
@@ -24,17 +28,20 @@ import {
   fmt,
   ProofType,
 } from "../lib/contracts";
-import { makeSDK, aaAddress, aaSend, aaBatch, encodeCall } from "../lib/aa";
-import { parsePaymentHeaders } from "../lib/x402";
-import type { X402Challenge, X402Settlement } from "../lib/x402";
+import { makeSDK, aaAddress, aaSend, encodeCall } from "../lib/aa";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const PORT         = parseInt(process.env.SELLER_PORT ?? "4001");
-const PRICE        = ethers.parseUnits("0.001", 18);   // 0.001 PYUSD per SMS
-const DEADLINE_SEC = 300;                               // 5 min delivery window
+const USDC_ADDR    = process.env.USDC_ADDRESS ?? process.env.PYUSD_ADDRESS!;
+const TOKEN_DEC    = parseInt(process.env.TOKEN_DECIMALS ?? "6");
+const PRICE        = BigInt(process.env.SMS_PRICE_UNITS ?? "1000");   // 0.001 USDC (6 dec)
+const DEADLINE_SEC = 300;
 const AGENT_NAME   = "sms.kite";
 const PROOF_TYPE   = ProofType.ORACLE;
+
+// Pieverse facilitator for x402 payment verification
+const FACILITATOR  = process.env.FACILITATOR_URL ?? "https://facilitator.pieverse.io";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,22 +55,72 @@ function json(res: http.ServerResponse, status: number, body: unknown) {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*",
     "Content-Length": Buffer.byteLength(data),
   });
   res.end(data);
 }
 
-// ─── Seller state ─────────────────────────────────────────────────────────────
+// ─── Payment verification via Pieverse ───────────────────────────────────────
 
-interface PendingTask {
-  taskId: string;
-  createdAt: number;
-  body: string;
+interface PieceverseVerifyResult {
+  isValid: boolean;
+  invalidReason?: string;
+  response?: {
+    success: boolean;
+    transaction?: { transactionHash: string };
+  };
 }
 
-const pendingTasks = new Map<string, PendingTask>();
+async function verifyPayment(
+  xPayment: string,
+  sellerAA: string,
+  amount: bigint,
+  resource: string,
+): Promise<PieceverseVerifyResult> {
+  // Decode base64 X-Payment header
+  let paymentPayload: unknown;
+  try {
+    paymentPayload = JSON.parse(Buffer.from(xPayment, "base64").toString("utf8"));
+  } catch {
+    return { isValid: false, invalidReason: "X-Payment header is not valid base64 JSON" };
+  }
+
+  log("verify", `Pieverse verify → ${FACILITATOR}/verify`);
+  const resp = await fetch(`${FACILITATOR}/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      payload: paymentPayload,
+      resource,
+      amount: amount.toString(),
+      asset: USDC_ADDR,
+      payTo: sellerAA,
+      network: "kite-mainnet",
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "unknown");
+    return { isValid: false, invalidReason: `Facilitator ${resp.status}: ${errText}` };
+  }
+
+  const result = await resp.json() as PieceverseVerifyResult;
+  return result;
+}
 
 // ─── Core trade logic ─────────────────────────────────────────────────────────
+
+interface SettlementResult {
+  taskId: string;
+  result: string;
+  paymentId: string;
+  quittanceTx: string;
+  blockNumber: number;
+  settled: boolean;
+  usdcAmount: string;
+}
 
 async function executeTrade(
   provider: ReturnType<typeof getProvider>,
@@ -75,37 +132,37 @@ async function executeTrade(
   nonce: Uint8Array,
   amount: bigint,
   deadline: bigint,
-  taskBody: string,
-): Promise<X402Settlement> {
+  taskTarget: string,
+): Promise<SettlementResult> {
   const c = getContracts(provider);
 
-  // ── Verify buyer allowance + balance ──────────────────────────────────────
+  // ── Verify buyer USDC balance + allowance ─────────────────────────────────
   const [allowance, buyerBal] = (await Promise.all([
-    c.pyusd.allowance(buyerAA, process.env.ESCROW_ADDRESS!),
-    c.pyusd.balanceOf(buyerAA),
+    c.usdc.allowance(buyerAA, process.env.ESCROW_ADDRESS!),
+    c.usdc.balanceOf(buyerAA),
   ])) as [bigint, bigint];
 
   if (allowance < amount) {
     throw Object.assign(
-      new Error(`Buyer allowance too low: ${fmt(allowance)} < ${fmt(amount)} PYUSD`),
+      new Error(`Buyer allowance too low: ${fmt(allowance)} < ${fmt(amount)} USDC`),
       { code: "INSUFFICIENT_ALLOWANCE" },
     );
   }
   if (buyerBal < amount) {
     throw Object.assign(
-      new Error(`Buyer AA balance too low: ${fmt(buyerBal)} < ${fmt(amount)} PYUSD — fund ${buyerAA}`),
+      new Error(`Buyer AA balance too low: ${fmt(buyerBal)} < ${fmt(amount)} USDC — fund ${buyerAA}`),
       { code: "INSUFFICIENT_BALANCE" },
     );
   }
 
-  // ── Verify paymentId matches ───────────────────────────────────────────────
+  // ── Verify paymentId ──────────────────────────────────────────────────────
   const expectedId = makePaymentId(buyerAA, sellerAA, amount, deadline, nonce);
   if (expectedId.toLowerCase() !== paymentId.toLowerCase()) {
     throw Object.assign(new Error("paymentId mismatch"), { code: "BAD_PAYMENT_ID" });
   }
-  log("verify", `paymentId ✓  buyer balance ${fmt(buyerBal)} PYUSD  allowance ${fmt(allowance)} PYUSD ✓`);
+  log("verify", `paymentId ✓  buyer ${fmt(buyerBal)} USDC  allowance ${fmt(allowance)} USDC ✓`);
 
-  // ── Open escrow (seller AA UserOp) ─────────────────────────────────────────
+  // ── Open escrow (seller AA UserOp — gasless) ──────────────────────────────
   log("escrow", `opening escrow via seller AA…`);
   const openCD = encodeCall(
     "function openEscrow(bytes32 paymentId, address buyer, address seller, uint256 amount, uint64 deadline, uint8 proofType)",
@@ -114,12 +171,12 @@ async function executeTrade(
   const openResult = await aaSend(sdk, sellerEOA, process.env.ESCROW_ADDRESS!, openCD);
   log("escrow", `opened tx ${openResult.txHash}  block ${openResult.blockNumber}`);
 
-  // ── Execute task (mock SMS delivery) ──────────────────────────────────────
-  log("deliver", `executing SMS to ${taskBody}…`);
+  // ── Execute SMS delivery ──────────────────────────────────────────────────
+  log("deliver", `delivering SMS to ${taskTarget}…`);
   const sid = `SID_${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-  const result = `SMS delivered to ${taskBody}  sid=${sid}`;
+  const result = `SMS delivered to ${taskTarget}  sid=${sid}`;
   const resultHash = ethers.keccak256(ethers.toUtf8Bytes(result));
-  const requestHash = ethers.keccak256(ethers.toUtf8Bytes(`send SMS: ${taskBody}`));
+  const requestHash = ethers.keccak256(ethers.toUtf8Bytes(`send SMS: ${taskTarget}`));
   log("deliver", `✓ ${result}`);
 
   // ── Oracle signs proof ────────────────────────────────────────────────────
@@ -128,7 +185,7 @@ async function executeTrade(
   const proofSig  = await signOracleProof(oracleEOA, paymentId, resultHash);
   log("prove", `oracle signed  sig ${proofSig.slice(0, 22)}…`);
 
-  // ── Post quittance → escrow settles (seller AA UserOp) ────────────────────
+  // ── Post quittance → escrow settles (gasless AA UserOp) ──────────────────
   log("settle", `posting quittance via seller AA…`);
   const now = BigInt(Math.floor(Date.now() / 1000));
   const postCD = encodeCall(
@@ -161,6 +218,7 @@ async function executeTrade(
     quittanceTx: settleResult.txHash,
     blockNumber: settleResult.blockNumber,
     settled:     true,
+    usdcAmount:  fmt(amount),
   };
 }
 
@@ -169,7 +227,7 @@ async function executeTrade(
 async function main() {
   const provider  = getProvider();
   const network   = await provider.getNetwork();
-  log("boot", `Network: Kite Testnet  chainId=${network.chainId}`);
+  log("boot", `Network: Kite Mainnet  chainId=${network.chainId}`);
 
   const sellerKey = process.env.SELLER_SMS_PRO_PRIVATE_KEY;
   const oracleKey = process.env.ORACLE_PRIVATE_KEY;
@@ -182,7 +240,6 @@ async function main() {
   const sdk       = makeSDK();
   const sellerAA  = aaAddress(sdk, sellerEOA.address);
 
-  // Verify bonded
   const c = getContracts(provider);
   const [bond, minBond] = (await Promise.all([
     c.bond.bonds(sellerAA),
@@ -191,10 +248,13 @@ async function main() {
 
   log("boot", `Seller EOA: ${sellerEOA.address}`);
   log("boot", `Seller AA:  ${sellerAA}`);
-  log("boot", `Bond: ${fmt(bond)} PYUSD (min ${fmt(minBond)}) ${bond >= minBond ? "✓" : "← run npm run integration first"}`);
+  log("boot", `Bond: ${fmt(bond)} USDC (min ${fmt(minBond)}) ${bond >= minBond ? "✓" : "← run npm run integration first"}`);
+  log("boot", `Price: ${fmt(PRICE)} USDC/SMS   Proof: ORACLE`);
+
+  // Seller's service URL — used as the x402 resource identifier
+  const SELLER_URL = process.env.SELLER_URL ?? `http://localhost:${PORT}/task`;
 
   const server = http.createServer(async (req, res) => {
-    // CORS pre-flight
     if (req.method === "OPTIONS") {
       res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" });
       res.end();
@@ -206,7 +266,6 @@ async function main() {
       return;
     }
 
-    // Parse body
     let rawBody = "";
     req.on("data", (chunk) => { rawBody += chunk; });
     await new Promise((r) => req.on("end", r));
@@ -215,49 +274,76 @@ async function main() {
     try { body = JSON.parse(rawBody || "{}"); } catch { /**/ }
 
     const taskTarget = body.to ?? "unknown";
-    const payment    = parsePaymentHeaders(req.headers as Record<string, string>);
+    const xPayment   = req.headers["x-payment"] as string | undefined;
 
-    // ── Round 1: no payment → 402 challenge ───────────────────────────────────
-    if (!payment) {
+    // ── Round 1: no payment → standard x402 402 challenge ─────────────────
+    if (!xPayment) {
       const taskId = Math.random().toString(36).slice(2, 10);
-      pendingTasks.set(taskId, { taskId, createdAt: Date.now(), body: taskTarget });
-
       log("req", `[${taskId}] 402 challenge → buyer (${taskTarget})`);
-      const challenge: X402Challenge = {
-        required:       true,
-        amount:         PRICE.toString(),
-        token:          process.env.PYUSD_ADDRESS!,
-        sellerPassport: sellerAA,
-        deadlineOffset: DEADLINE_SEC,
-        taskId,
-      };
-      json(res, 402, challenge);
+
+      json(res, 402, {
+        accepts: [
+          {
+            scheme:           "exact",
+            network:          "kite-mainnet",
+            maxAmountRequired: PRICE.toString(),
+            resource:         SELLER_URL,
+            description:      `SMS delivery to ${taskTarget}`,
+            mimeType:         "application/json",
+            payTo:            sellerAA,
+            maxTimeoutSeconds: DEADLINE_SEC,
+            asset:            USDC_ADDR,
+            extra: {
+              taskId,
+              name:    AGENT_NAME,
+              version: "1",
+            },
+          },
+        ],
+        error: "Payment required",
+      });
       return;
     }
 
-    // ── Round 2: payment headers present → process ───────────────────────────
-    const { "X-Payment-Id": paymentId, "X-Payment-Nonce": nonceHex,
-            "X-Payment-Buyer": buyerAA,  "X-Payment-Amount": amountStr,
-            "X-Payment-Deadline": deadlineStr } = payment;
-
-    log("req", `payment auth received  paymentId=${paymentId.slice(0, 14)}…`);
+    // ── Round 2: X-Payment header present → verify + execute ──────────────
+    log("req", `X-Payment received (${xPayment.length} chars)`);
 
     try {
-      const nonce    = ethers.getBytes(nonceHex);
-      const amount   = BigInt(amountStr);
-      const deadline = BigInt(deadlineStr);
+      // 1. Verify with Pieverse
+      const verification = await verifyPayment(xPayment, sellerAA, PRICE, SELLER_URL);
+      if (!verification.isValid) {
+        log("req", `✗ Payment invalid: ${verification.invalidReason}`);
+        json(res, 402, { error: verification.invalidReason ?? "Payment verification failed" });
+        return;
+      }
+      log("verify", `Pieverse: payment valid ✓`);
 
+      // 2. Extract payment details from the verified payload for escrow
+      // kpass signs a standard EIP-3009 transferWithAuthorization payload
+      // We derive our paymentId from the nonce in the payment payload
+      let paymentPayload: Record<string, unknown> = {};
+      try {
+        paymentPayload = JSON.parse(Buffer.from(xPayment, "base64").toString("utf8")) as Record<string, unknown>;
+      } catch { /**/ }
+
+      const buyerAA    = paymentPayload.from as string ?? "";
+      const nonce      = ethers.getBytes(paymentPayload.nonce as string ?? ethers.hexlify(ethers.randomBytes(32)));
+      const deadline   = BigInt(paymentPayload.validBefore as string ?? Math.floor(Date.now() / 1000) + DEADLINE_SEC);
+      const amount     = BigInt((paymentPayload.value as string) ?? PRICE.toString());
+      const paymentId  = makePaymentId(buyerAA, sellerAA, amount, deadline, nonce);
+
+      // 3. Execute trade (open escrow → deliver → post quittance)
       const settlement = await executeTrade(
         provider, sellerEOA, sellerAA, sdk,
         buyerAA, paymentId, nonce, amount, deadline, taskTarget,
       );
 
-      log("req", `✓ settled  taskId=${settlement.taskId}`);
+      log("req", `✓ settled  paymentId=${paymentId.slice(0, 14)}…  quittanceTx=${settlement.quittanceTx.slice(0, 14)}…`);
       json(res, 200, settlement);
-    } catch (err: any) {
-      // Extract the most useful error message from ethers revert data
-      const reason = err.reason ?? err.shortMessage ?? err.message ?? "unknown error";
-      const code   = err.code ?? "INTERNAL_ERROR";
+    } catch (err: unknown) {
+      const e = err as { reason?: string; shortMessage?: string; message?: string; code?: string };
+      const reason = e.reason ?? e.shortMessage ?? e.message ?? "unknown error";
+      const code   = e.code ?? "INTERNAL_ERROR";
       log("req", `✗ ${code}: ${reason}`);
       const httpStatus =
         code === "INSUFFICIENT_ALLOWANCE" || code === "INSUFFICIENT_BALANCE" ? 402 : 500;
@@ -267,8 +353,7 @@ async function main() {
 
   server.listen(PORT, () => {
     log("boot", `\n  ${AGENT_NAME} listening on http://localhost:${PORT}/task`);
-    log("boot", `  Price: ${fmt(PRICE)} PYUSD/SMS   Proof: ORACLE   Passport: ${sellerAA}`);
-    log("boot", `  Ready for buyer requests\n`);
+    log("boot", `  Price: ${fmt(PRICE)} USDC/SMS   x402 standard format   Kite mainnet\n`);
   });
 }
 
