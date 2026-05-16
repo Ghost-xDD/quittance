@@ -108,7 +108,7 @@ async function main() {
   const oracleAdapter = await OracleAdapter.deploy();
   await oracleAdapter.waitForDeployment();
   const oracleAdapterAddress = await oracleAdapter.getAddress();
-  console.log(`OracleAdapter:   ${oracleAdapterAddress}`);
+  console.log(`OracleAdapter:       ${oracleAdapterAddress}`);
 
   // ── 7. TimeoutAdapter ───────────────────────────────────────────────────────
   console.log("Deploying TimeoutAdapter...");
@@ -116,7 +116,59 @@ async function main() {
   const timeoutAdapter = await TimeoutAdapter.deploy(escrowAddress);
   await timeoutAdapter.waitForDeployment();
   const timeoutAdapterAddress = await timeoutAdapter.getAddress();
-  console.log(`TimeoutAdapter:  ${timeoutAdapterAddress}`);
+  console.log(`TimeoutAdapter:      ${timeoutAdapterAddress}`);
+
+  // ── 8. CosignAdapter (Tier-1) ────────────────────────────────────────────────
+  console.log("Deploying CosignAdapter...");
+  const CosignAdapter = await ethers.getContractFactory("CosignAdapter");
+  const cosignAdapter = await CosignAdapter.deploy();
+  await cosignAdapter.waitForDeployment();
+  const cosignAdapterAddress = await cosignAdapter.getAddress();
+  console.log(`CosignAdapter:       ${cosignAdapterAddress}`);
+
+  // ── 9. ThresholdAdapter (Tier-1, 3-of-5 for PriceFeed) ──────────────────────
+  console.log("Deploying ThresholdAdapter (threshold=3)...");
+  const ThresholdAdapter = await ethers.getContractFactory("ThresholdAdapter");
+  const thresholdAdapter = await ThresholdAdapter.deploy(3); // 3-of-N
+  await thresholdAdapter.waitForDeployment();
+  const thresholdAdapterAddress = await thresholdAdapter.getAddress();
+  console.log(`ThresholdAdapter:    ${thresholdAdapterAddress}`);
+
+  // ── 10. TeeAdapter (Tier-2 honest mock) ──────────────────────────────────────
+  console.log("Deploying TeeAdapter (Tier-2 honest mock)...");
+  const TeeAdapter = await ethers.getContractFactory("TeeAdapter");
+  const teeAdapter = await TeeAdapter.deploy();
+  await teeAdapter.waitForDeployment();
+  const teeAdapterAddress = await teeAdapter.getAddress();
+  console.log(`TeeAdapter:          ${teeAdapterAddress}`);
+
+  // ── 11. ZktlsAdapter (Tier-2 honest mock) ────────────────────────────────────
+  console.log("Deploying ZktlsAdapter (Tier-2 honest mock)...");
+  const ZktlsAdapter = await ethers.getContractFactory("ZktlsAdapter");
+  const zktlsAdapter = await ZktlsAdapter.deploy();
+  await zktlsAdapter.waitForDeployment();
+  const zktlsAdapterAddress = await zktlsAdapter.getAddress();
+  console.log(`ZktlsAdapter:        ${zktlsAdapterAddress}`);
+
+  // ── 12. Forwarder (EIP-712 gasless meta-tx) ───────────────────────────────────
+  // relayerFee: ~0.001 settlement units (tuned per network, ≈ gas cost in token)
+  const relayerFee = cfg.tokenDecimals === 18
+    ? ethers.parseUnits("0.001", 18)   // 0.001 PYUSD on testnet
+    : ethers.parseUnits("0.001", 6);   // 0.001 USDC.e on mainnet
+  console.log("Deploying Forwarder...");
+  const Forwarder = await ethers.getContractFactory("Forwarder");
+  const forwarder = await Forwarder.deploy(escrowAddress, tokenAddress, relayerFee);
+  await forwarder.waitForDeployment();
+  const forwarderAddress = await forwarder.getAddress();
+  console.log(`Forwarder:           ${forwarderAddress}`);
+
+  // ── 13. QuittanceEvaluatorHook (ERC-8183) ─────────────────────────────────────
+  console.log("Deploying QuittanceEvaluatorHook...");
+  const Hook = await ethers.getContractFactory("QuittanceEvaluatorHook");
+  const hook = await Hook.deploy(escrowAddress, registryAddress);
+  await hook.waitForDeployment();
+  const hookAddress = await hook.getAddress();
+  console.log(`QuittanceEvalHook:   ${hookAddress}`);
 
   // ── Post-deploy wiring ──────────────────────────────────────────────────────
   console.log("\nWiring contracts...");
@@ -131,6 +183,18 @@ async function main() {
   await (await adapterRegistry.register(0, oracleAdapterAddress)).wait();
   console.log("  AdapterRegistry: ORACLE registered ✓");
 
+  await (await adapterRegistry.register(1, teeAdapterAddress)).wait();
+  console.log("  AdapterRegistry: TEE registered ✓");
+
+  await (await adapterRegistry.register(2, zktlsAdapterAddress)).wait();
+  console.log("  AdapterRegistry: ZKTLS registered ✓");
+
+  await (await adapterRegistry.register(3, cosignAdapterAddress)).wait();
+  console.log("  AdapterRegistry: COSIGN registered ✓");
+
+  await (await adapterRegistry.register(4, thresholdAdapterAddress)).wait();
+  console.log("  AdapterRegistry: THRESHOLD registered ✓");
+
   await (await adapterRegistry.register(5, timeoutAdapterAddress)).wait();
   console.log("  AdapterRegistry: TIMEOUT registered ✓");
 
@@ -141,6 +205,34 @@ async function main() {
     console.log(`  OracleAdapter: attestor ${attestorAddress} registered ✓`);
   } else {
     console.log("  OracleAdapter: no attestor registered (set ORACLE_ATTESTOR_ADDRESS to register)");
+  }
+
+  // Register TEE attestor if provided
+  const teeAttestorAddress = process.env.TEE_ATTESTOR_ADDRESS;
+  if (teeAttestorAddress) {
+    await (await teeAdapter.registerAttestor(teeAttestorAddress)).wait();
+    console.log(`  TeeAdapter: attestor ${teeAttestorAddress} registered ✓`);
+  } else {
+    console.log("  TeeAdapter: no attestor registered (set TEE_ATTESTOR_ADDRESS to register)");
+  }
+
+  // Register zkTLS attestor if provided
+  const zktlsAttestorAddress = process.env.ZKTLS_ATTESTOR_ADDRESS;
+  if (zktlsAttestorAddress) {
+    await (await zktlsAdapter.registerAttestor(zktlsAttestorAddress)).wait();
+    console.log(`  ZktlsAdapter: attestor ${zktlsAttestorAddress} registered ✓`);
+  } else {
+    console.log("  ZktlsAdapter: no attestor registered (set ZKTLS_ATTESTOR_ADDRESS to register)");
+  }
+
+  // Register threshold attestors if provided (comma-separated list)
+  const thresholdAttestors = process.env.THRESHOLD_ATTESTOR_ADDRESSES?.split(",").map(a => a.trim()).filter(Boolean) ?? [];
+  for (const addr of thresholdAttestors) {
+    await (await thresholdAdapter.addAttestor(addr)).wait();
+    console.log(`  ThresholdAdapter: attestor ${addr} registered ✓`);
+  }
+  if (thresholdAttestors.length === 0) {
+    console.log("  ThresholdAdapter: no attestors registered (set THRESHOLD_ATTESTOR_ADDRESSES to register)");
   }
 
   // ── Save deployment addresses ────────────────────────────────────────────────
@@ -160,8 +252,14 @@ async function main() {
       Escrow: escrowAddress,
       QuittanceRegistry: registryAddress,
       ReputationView: reputationViewAddress,
+      Forwarder: forwarderAddress,
+      QuittanceEvaluatorHook: hookAddress,
       OracleAdapter: oracleAdapterAddress,
       TimeoutAdapter: timeoutAdapterAddress,
+      CosignAdapter: cosignAdapterAddress,
+      ThresholdAdapter: thresholdAdapterAddress,
+      TeeAdapter: teeAdapterAddress,
+      ZktlsAdapter: zktlsAdapterAddress,
     },
   };
 
