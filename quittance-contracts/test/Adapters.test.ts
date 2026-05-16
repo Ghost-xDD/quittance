@@ -627,12 +627,14 @@ describe("Forwarder", () => {
       sellerPassport: sellerW.address,
       requestHash:    REQUEST_H,
       amount:         AMOUNT,
-      gasFeeBudget:   budget,
       deadline,
       proofType:      ProofType.ORACLE,
       minBondTier:    0,
       nonce:          0n,
     };
+
+    // Buyer approves Escrow directly (Forwarder doesn't hold funds)
+    await contracts.token.connect(buyerW).approve(await contracts.escrow.getAddress(), AMOUNT);
 
     const chainId = (await ethers.provider.getNetwork()).chainId;
     const sig = await buyerW.signTypedData(
@@ -657,7 +659,6 @@ describe("Forwarder", () => {
       sellerPassport: sellerW.address,
       requestHash:    REQUEST_H,
       amount:         AMOUNT,
-      gasFeeBudget:   ethers.parseUnits("0.01", 18),
       deadline:       BigInt(await blockTimestamp() + 300),
       proofType:      ProofType.ORACLE,
       minBondTier:    0,
