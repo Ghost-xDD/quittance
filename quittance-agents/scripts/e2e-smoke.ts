@@ -50,11 +50,11 @@ async function main() {
   const provider = getProvider();
 
   const buyerKey  = process.env.BUYER_PRIVATE_KEY;
-  const sellerKey = process.env.SELLER_SMS_PRIVATE_KEY;
+  const sellerKey = process.env.SELLER_SMS_PRO_PRIVATE_KEY;
   const oracleKey = process.env.ORACLE_PRIVATE_KEY;
 
   if (!buyerKey || !sellerKey || !oracleKey) {
-    console.error("Set BUYER_PRIVATE_KEY, SELLER_SMS_PRIVATE_KEY, ORACLE_PRIVATE_KEY in .env");
+    console.error("Set BUYER_PRIVATE_KEY, SELLER_SMS_PRO_PRIVATE_KEY, ORACLE_PRIVATE_KEY in .env");
     process.exit(1);
   }
 

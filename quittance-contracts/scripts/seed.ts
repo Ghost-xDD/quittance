@@ -25,12 +25,13 @@ async function main() {
   const bond = await ethers.getContractAt("Bond", bondAddress);
   const tokenContract = await ethers.getContractAt("IERC20", token.address);
 
-  // Seller EOA addresses from environment
+  // Seller EOA addresses from environment (six demo sellers)
   const sellerEnvKeys = [
-    "SELLER_SMS_EOA",
-    "SELLER_SCRAPE_EOA",
-    "SELLER_LLM_EOA",
+    "SELLER_SMS_PRO_EOA",
+    "SELLER_SMS_CHEAP_EOA",
     "SELLER_TRANSLATOR_EOA",
+    "SELLER_LLM_EOA",
+    "SELLER_SCRAPE_EOA",
     "SELLER_PRICEFEED_EOA",
   ];
 
