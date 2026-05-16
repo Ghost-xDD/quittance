@@ -73,7 +73,7 @@ async function main() {
   // ── Pre-flight ──────────────────────────────────────────────────────────────
   const [buyerKite, buyerUsdt, sellerBond, minBond] = await Promise.all([
     provider.getBalance(buyer.address),
-    c.usdt.balanceOf(buyer.address),
+    c.pyusd.balanceOf(buyer.address),
     c.bond.bonds(seller.address),
     c.bond.MIN_BOND(),
   ]);
@@ -82,34 +82,34 @@ async function main() {
   log("preflight", `seller bond: ${fmt(sellerBond)} / min ${fmt(minBond)} USDT`);
 
   if (buyerUsdt < PAYMENT_AMOUNT) {
-    console.error(`\n❌ Buyer (${buyer.address}) needs ≥ ${fmt(PAYMENT_AMOUNT)} USDT`);
+    console.error(`\n❌ Buyer (${buyer.address}) needs ≥ ${fmt(PAYMENT_AMOUNT)} PYUSD`);
     console.error(`   Has: ${fmt(buyerUsdt)}  →  faucet.gokite.ai\n`);
     process.exit(1);
   }
 
   // ── Step 0: Bond deposit (if needed) ───────────────────────────────────────
   if (sellerBond < minBond) {
-    log("step 0", `seller not bonded — depositing ${fmt(minBond)} USDT...`);
+    log("step 0", `seller not bonded — depositing ${fmt(minBond)} PYUSD...`);
 
-    const usdtWithSeller = c.usdt.connect(seller) as typeof c.usdt;
-    const allowance: bigint = await c.usdt.allowance(seller.address, process.env.BOND_ADDRESS!);
+    const pyusdWithSeller = c.pyusd.connect(seller) as typeof c.pyusd;
+    const allowance: bigint = await c.pyusd.allowance(seller.address, process.env.BOND_ADDRESS!);
     if (allowance < minBond) {
-      await waitForTx("step 0a", usdtWithSeller.approve(process.env.BOND_ADDRESS!, minBond));
+      await waitForTx("step 0a", pyusdWithSeller.approve(process.env.BOND_ADDRESS!, minBond));
     }
 
     const bondWithSeller = c.bond.connect(seller) as typeof c.bond;
     await waitForTx("step 0b", bondWithSeller.deposit(minBond));
     log("step 0", `✅ bonded`);
   } else {
-    log("step 0", `seller already bonded (${fmt(sellerBond)} USDT) ✓`);
+    log("step 0", `seller already bonded (${fmt(sellerBond)} PYUSD) ✓`);
   }
 
   // ── Step 1: Buyer approves Escrow ───────────────────────────────────────────
-  log("step 1", "buyer approves Escrow for USDT...");
-  const usdtWithBuyer = c.usdt.connect(buyer) as typeof c.usdt;
-  const allowance: bigint = await c.usdt.allowance(buyer.address, process.env.ESCROW_ADDRESS!);
+  log("step 1", "buyer approves Escrow for PYUSD...");
+  const pyusdWithBuyer = c.pyusd.connect(buyer) as typeof c.pyusd;
+  const allowance: bigint = await c.pyusd.allowance(buyer.address, process.env.ESCROW_ADDRESS!);
   if (allowance < PAYMENT_AMOUNT) {
-    await waitForTx("step 1", usdtWithBuyer.approve(process.env.ESCROW_ADDRESS!, PAYMENT_AMOUNT));
+    await waitForTx("step 1", pyusdWithBuyer.approve(process.env.ESCROW_ADDRESS!, PAYMENT_AMOUNT));
   } else {
     log("step 1", `allowance already sufficient (${fmt(allowance)}) ✓`);
   }

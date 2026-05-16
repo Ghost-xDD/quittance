@@ -46,7 +46,7 @@ async function main() {
 
     const [kiteBalance, usdtBalance] = await Promise.all([
       provider.getBalance(aaWallet),
-      getContracts(provider).usdt.balanceOf(aaWallet),
+      getContracts(provider).pyusd.balanceOf(aaWallet),
     ]);
 
     const isSeller = SELLERS.includes(name);
