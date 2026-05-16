@@ -1,2 +1,20 @@
 init-docs
 reference/
+.kite-passport/
+
+# IDE / AI assistant local data
+.cursor/
+.cline/
+.claude/
+.agents/skills/
+
+# Next.js
+quittance-web/.next/
+quittance-web/node_modules/
+
+# Agents
+quittance-agents/node_modules/
+
+# Env files with secrets
+quittance-web/.env.local
+quittance-agents/.env

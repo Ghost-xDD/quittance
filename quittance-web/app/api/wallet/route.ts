@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 
-const RPC_URL    = process.env.RPC_URL ?? "https://rpc-testnet.gokite.ai";
-const BUYER_ADDR = process.env.BUYER_ADDR ?? "";
-const PYUSD_ADDR = process.env.PYUSD_ADDR ?? "";
+// Kite Mainnet — Passport wallet + USDC
+const RPC_URL    = process.env.RPC_URL ?? "https://rpc.gokite.ai";
+const BUYER_ADDR = process.env.PASSPORT_WALLET_ADDR ?? process.env.BUYER_ADDR ?? "";
+const USDC_ADDR  = process.env.USDC_ADDR ?? "0x7aB6f3ed87C42eF0aDb67Ed95090f8bF5240149e";
+const PYUSD_ADDR = process.env.PYUSD_ADDR ?? USDC_ADDR;
 
 // balanceOf(address) selector
 const BALANCE_OF = "0x70a08231";
@@ -51,14 +53,13 @@ function fromWei(hex: string, decimals = 18): string {
 }
 
 export async function GET() {
-  if (!BUYER_ADDR || !PYUSD_ADDR) {
-    return NextResponse.json({ pyusd: "—", kite: "—" });
+  if (!BUYER_ADDR) {
+    return NextResponse.json({ usdc: "—", kite: "—" });
   }
 
   try {
-    const [pyusdHex, kiteHex, block] = await Promise.all([
-      ethCall(PYUSD_ADDR, encode(BUYER_ADDR)),
-      ethCall("0x0000000000000000000000000000000000000000", ""), // native balance below
+    const [usdcHex, block] = await Promise.all([
+      ethCall(USDC_ADDR, encode(BUYER_ADDR)),
       ethBlockNumber(),
     ]);
 
@@ -79,11 +80,12 @@ export async function GET() {
     const kiteBalHex = kiteJson.result ?? "0x0";
 
     return NextResponse.json({
-      pyusd: fromWei(pyusdHex, 6),
-      kite:  fromWei(kiteBalHex, 18),
+      usdc: fromWei(usdcHex, 6),
+      kite: fromWei(kiteBalHex, 18),
       block,
+      address: BUYER_ADDR,
     });
   } catch {
-    return NextResponse.json({ pyusd: "—", kite: "—" });
+    return NextResponse.json({ usdc: "—", kite: "—" });
   }
 }

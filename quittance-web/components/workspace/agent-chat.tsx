@@ -12,10 +12,16 @@ import type {
   ScriptStep,
 } from "./types";
 import type { AgentEvent } from "@/lib/agent-event-types";
+import { PassportConnectModal } from "./passport-connect-modal";
 
 /* ─── Demo script ─────────────────────────────────────────────── */
 
 const DEMO_SCRIPT: ScriptStep[] = [
+  // ── Act 0: Passport session approval ──
+  {
+    kind: "passport", delay: 0,
+    content: "Connect Kite Passport to authorize a 1 USDC spending session.",
+  },
   // ── Act 1: Happy path — sms.kite delivers, ORACLE proof settles ──
   {
     kind: "user", delay: 0,
@@ -494,8 +500,13 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
   const [running, setRunning] = useState(false);
   const [lastMsgStreaming, setLastMsgStreaming] = useState(false);
   const [isLive, setIsLive] = useState(false);
+  const [passportConnected, setPassportConnected] = useState(false);
+  const [passportSessionToken, setPassportSessionToken] = useState<string | undefined>();
+  const [showPassportModal, setShowPassportModal] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stoppedRef = useRef(false);
+  const passportConnectedRef = useRef(passportConnected);
+  useEffect(() => { passportConnectedRef.current = passportConnected; }, [passportConnected]);
 
   // ── Live SSE stream from buyer-agent process ───────────────────
   const handleLiveEvent = useCallback((ev: AgentEvent) => {
@@ -541,7 +552,12 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
     }
   }, [onQuittanceEvent]);
 
-  useLiveStream(handleLiveEvent, setIsLive);
+  useLiveStream(handleLiveEvent, (live: boolean) => {
+    setIsLive(live);
+    if (live && !passportConnectedRef.current && !DEMO_AUTO_START) {
+      setShowPassportModal(true);
+    }
+  });
 
   function scrollToBottom() {
     requestAnimationFrame(() => {
@@ -571,7 +587,20 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
       if (stoppedRef.current) break;
       cumulativeDelay = 0;
 
-      if (step.kind === "user") {
+      if (step.kind === "passport") {
+        // Show the passport modal as part of the demo flow
+        setShowPassportModal(true);
+        // Wait for it to be dismissed (connected or skipped) before continuing
+        await new Promise<void>((resolve) => {
+          const unsub = setInterval(() => {
+            if (!document.querySelector("[data-passport-modal]")) {
+              clearInterval(unsub);
+              resolve();
+            }
+          }, 300);
+        });
+
+      } else if (step.kind === "user") {
         addMsg(mkMsg("user", step.content!));
 
       } else if (step.kind === "reasoning") {
@@ -628,26 +657,47 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
   }, []); // eslint-disable-line
 
   async function handleUserSend(text: string) {
+    // If live and no passport session, prompt connection first
+    if (isLive && !passportConnected) {
+      setShowPassportModal(true);
+      return;
+    }
     addMsg(mkMsg("user", text));
     try {
       const res = await fetch("/api/run-task", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ task: text }),
+        body:    JSON.stringify({ task: text, sessionToken: passportSessionToken }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "unknown" }));
         addMsg(mkMsg("agent", `Could not start agent: ${err.error ?? res.statusText}`));
       }
-      // On success the agent emits events back through the SSE stream —
-      // no need to add a message here; the "user" event will arrive and
-      // reset the chat automatically.
-    } catch (e: any) {
-      addMsg(mkMsg("agent", `Network error reaching /api/run-task: ${e.message}`));
+      // On success the agent emits events back through the SSE stream.
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      addMsg(mkMsg("agent", `Network error reaching /api/run-task: ${msg}`));
     }
   }
 
   return (
+    <>
+      {showPassportModal && (
+        <PassportConnectModal
+          onConnected={(token) => {
+            setPassportSessionToken(token);
+            setPassportConnected(true);
+            setShowPassportModal(false);
+            addMsg(mkMsg("agent", "Kite Passport session authorized. Budget: 1 USDC · 24h TTL. I can now execute x402 payments on your behalf — every cent is only released when delivery is cryptographically verified on Kite chain. What do you need?"));
+          }}
+          onSkip={() => {
+            setPassportConnected(true);
+            setShowPassportModal(false);
+            addMsg(mkMsg("agent", "Passport skipped — running with pre-funded session. What's the task?"));
+          }}
+        />
+      )}
+
     <div className="flex h-full flex-col bg-vellum">
       {/* Title bar */}
       <div className="flex shrink-0 items-center justify-between border-b border-seam/60 px-5 py-3">
@@ -660,14 +710,26 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
           </span>
         </div>
         <div className="num flex items-center gap-3 text-[10px] uppercase tracking-[0.2em] text-print-ghost">
-          {isLive && (
+          {isLive && passportConnected && (
             <span className="flex items-center gap-1.5 text-sage">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="absolute inset-0 animate-ping rounded-full bg-sage opacity-50" />
                 <span className="relative h-1.5 w-1.5 rounded-full bg-sage" />
               </span>
-              live
+              passport · live
             </span>
+          )}
+          {isLive && !passportConnected && (
+            <button
+              onClick={() => setShowPassportModal(true)}
+              className="flex items-center gap-1.5 rounded-sm border border-seal/40 bg-seal/10 px-2.5 py-1 text-seal transition hover:bg-seal/20"
+            >
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="absolute inset-0 animate-ping rounded-full bg-seal opacity-50" />
+                <span className="relative h-1.5 w-1.5 rounded-full bg-seal" />
+              </span>
+              Connect Passport
+            </button>
           )}
           {running && !isLive && (
             <span className="flex items-center gap-1.5 text-seal">
@@ -720,6 +782,7 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
         isLive={isLive}
       />
     </div>
+    </>
   );
 }
 

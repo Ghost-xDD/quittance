@@ -57,7 +57,7 @@ export interface ChatMessage {
 }
 
 // Demo script step
-export type ScriptStepKind = "user" | "reasoning" | "agent" | "action" | "quittance";
+export type ScriptStepKind = "user" | "reasoning" | "agent" | "action" | "quittance" | "passport";
 
 export interface ScriptStep {
   kind: ScriptStepKind;

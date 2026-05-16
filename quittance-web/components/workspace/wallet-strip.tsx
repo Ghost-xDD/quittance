@@ -2,18 +2,15 @@
 
 import { useEffect, useState } from "react";
 
-const BUYER_ADDR = process.env.NEXT_PUBLIC_BUYER_ADDR ?? "0xBuyerWallet";
-const RPC_URL    = process.env.NEXT_PUBLIC_RPC_URL ?? "https://rpc-testnet.gokite.ai";
-
 function truncate(addr: string) {
   if (addr.length <= 12) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-interface Balances { pyusd: string; kite: string }
+interface Balances { usdc: string; kite: string; address?: string }
 
 export function WalletStrip() {
-  const [balances, setBalances] = useState<Balances>({ pyusd: "—", kite: "—" });
+  const [balances, setBalances] = useState<Balances>({ usdc: "—", kite: "—" });
   const [online, setOnline] = useState(true);
   const [block, setBlock] = useState<number | null>(null);
 
@@ -26,7 +23,7 @@ export function WalletStrip() {
         if (!res.ok) throw new Error("not ok");
         const data = await res.json() as Balances & { block?: number };
         if (!cancelled) {
-          setBalances({ pyusd: data.pyusd, kite: data.kite });
+          setBalances({ usdc: data.usdc, kite: data.kite, address: data.address });
           if (data.block) setBlock(data.block);
           setOnline(true);
         }
@@ -40,20 +37,22 @@ export function WalletStrip() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
+  const displayAddr = balances.address ? truncate(balances.address) : "—";
+
   return (
     <div className="num flex h-10 shrink-0 items-center gap-4 border-t border-seam/60 bg-vellum-2/60 px-4 text-[10px] uppercase tracking-[0.2em] backdrop-blur-sm">
-      {/* Address */}
+      {/* Passport address */}
       <span className="flex items-center gap-1.5 text-print-ghost">
-        <span className="hidden sm:inline text-print-faint">buyer</span>
-        <span className="font-mono text-print-dim">{truncate(BUYER_ADDR)}</span>
+        <span className="hidden sm:inline text-print-faint">passport</span>
+        <span className="font-mono text-print-dim">{displayAddr}</span>
       </span>
 
       <Divider />
 
       {/* Balances */}
       <span className="flex items-center gap-1 text-print-faint">
-        <span className="text-seal">{balances.pyusd}</span>
-        <span>PYUSD</span>
+        <span className="text-seal">{balances.usdc}</span>
+        <span>USDC</span>
       </span>
 
       <span className="flex items-center gap-1 text-print-faint">
@@ -65,17 +64,13 @@ export function WalletStrip() {
 
       {/* Network */}
       <span className="flex items-center gap-1.5 text-print-ghost">
-        <span
-          className={`relative flex h-1.5 w-1.5 ${online ? "" : "opacity-40"}`}
-        >
+        <span className={`relative flex h-1.5 w-1.5 ${online ? "" : "opacity-40"}`}>
           {online && (
             <span className="absolute inset-0 animate-ping rounded-full bg-sage opacity-40" />
           )}
-          <span
-            className={`relative h-1.5 w-1.5 rounded-full ${online ? "bg-sage" : "bg-crimson"}`}
-          />
+          <span className={`relative h-1.5 w-1.5 rounded-full ${online ? "bg-sage" : "bg-crimson"}`} />
         </span>
-        kite-testnet
+        kite-mainnet
       </span>
 
       {block && (

@@ -16,9 +16,11 @@ const AGENTS_DIR = path.resolve(process.cwd(), "..", "quittance-agents");
 
 export async function POST(req: NextRequest) {
   let task = "";
+  let sessionToken: string | undefined;
   try {
     const body = await req.json();
     task = (body.task ?? "").trim();
+    sessionToken = body.sessionToken as string | undefined;
   } catch {
     return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
   }
@@ -28,19 +30,22 @@ export async function POST(req: NextRequest) {
   }
 
   // Fire-and-forget: buyer-agent streams events back via /api/agent-events webhook
+  const extraEnv: Record<string, string> = { FORCE_COLOR: "0" };
+  if (sessionToken) {
+    extraEnv.KPASS_SESSION_TOKEN = sessionToken;
+  }
+
   const proc = spawn(
     "npx",
     ["tsx", "scripts/buyer-agent.ts", "--task", task],
     {
       cwd:      AGENTS_DIR,
-      // Pass the current process env so OPENAI_API_KEY etc. inherited by
-      // the sub-process alongside the .env the agent loads itself.
-      env:     { ...process.env, FORCE_COLOR: "0" },
+      env:     { ...process.env, ...extraEnv },
       stdio:   "ignore",
       detached: true,
     },
   );
-  proc.unref(); // don't keep the Next.js server alive waiting for this
+  proc.unref();
 
   return NextResponse.json({ ok: true, task });
 }
