@@ -139,9 +139,10 @@ contract CosignAdapter is IProofAdapter {
         }
         if (v_sig < 27) v_sig += 27;
 
-        // s_adapted = s_presig + t mod n (secp256k1 order)
+        // s_adapted = (s_presig + t) mod n (secp256k1 order).
+        // addmod is safe: avoids uint256 overflow when s_presig + t > 2^256.
         uint256 n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
-        uint256 s_adapted = (uint256(s_presig) + uint256(t)) % n;
+        uint256 s_adapted = addmod(uint256(s_presig), uint256(t), n);
 
         bytes32 paymentDigest = _paymentMessage(q.paymentId, q.resultHash, T_x, T_parity);
         address sellerSigner  = ecrecover(paymentDigest, v_sig, r, bytes32(s_adapted));
