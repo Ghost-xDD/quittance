@@ -16,14 +16,15 @@ const BUNDLER_RPC  = process.env.KITE_BUNDLER_URL  ?? "https://bundler-service.s
 
 const AGENT_KEYS: Record<string, string | undefined> = {
   buyer:       process.env.BUYER_PRIVATE_KEY,
-  sms:         process.env.SELLER_SMS_PRIVATE_KEY,
-  scrape:      process.env.SELLER_SCRAPE_PRIVATE_KEY,
-  llm:         process.env.SELLER_LLM_PRIVATE_KEY,
+  "sms-pro":   process.env.SELLER_SMS_PRO_PRIVATE_KEY,
+  "sms-cheap": process.env.SELLER_SMS_CHEAP_PRIVATE_KEY,
   translator:  process.env.SELLER_TRANSLATOR_PRIVATE_KEY,
+  llm:         process.env.SELLER_LLM_PRIVATE_KEY,
+  scrape:      process.env.SELLER_SCRAPE_PRIVATE_KEY,
   pricefeed:   process.env.SELLER_PRICEFEED_PRIVATE_KEY,
 };
 
-const SELLERS = ["sms", "scrape", "llm", "translator", "pricefeed"];
+const SELLERS = ["sms-pro", "sms-cheap", "translator", "llm", "scrape", "pricefeed"];
 
 async function main() {
   const provider = getProvider();

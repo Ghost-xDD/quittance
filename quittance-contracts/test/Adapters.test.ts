@@ -415,19 +415,26 @@ describe("CosignAdapter", () => {
     );
     const sig_U = await buyerWallet.signMessage(ethers.getBytes(ackDigest));
 
-    // Seller presig: sign normally, subtract t from s
+    // Seller presig: sign with the Ethereum-prefixed hash (matching _paymentMessage in contract),
+    // then subtract t from s so that Adapt(sigHat_S, t) produces the full sig over the
+    // same Ethereum-prefixed digest, recovering to sellerWallet.address.
     const paymentDigest = ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(
         ["bytes32", "bytes32", "bytes32", "uint8"],
         [paymentId, resultHash, T_x, T_parity],
       )
     );
-    const sellerSig  = sellerWallet.signingKey.sign(ethers.getBytes(paymentDigest));
-    const s_presig   = (BigInt(sellerSig.s) - t + N) % N;
+    // signMessage adds the "\x19Ethereum Signed Message:\n32" prefix (toEthSignedMessageHash equivalent)
+    const sellerSigHex = await sellerWallet.signMessage(ethers.getBytes(paymentDigest));
+    const sellerSigBytes = ethers.getBytes(sellerSigHex);
+    const r_val      = ethers.hexlify(sellerSigBytes.slice(0, 32));
+    const s_full     = BigInt(ethers.hexlify(sellerSigBytes.slice(32, 64)));
+    const v_val      = sellerSigBytes[64]; // 27 or 28
+    const s_presig   = (s_full - t + N) % N;
     const sigHat_S   = ethers.concat([
-      sellerSig.r,
+      r_val,
       ethers.zeroPadValue(ethers.toBeHex(s_presig), 32),
-      sellerSig.v === 27 ? "0x1b" : "0x1c",
+      v_val === 27 ? "0x1b" : "0x1c",
     ]);
 
     const proofPayload = ethers.AbiCoder.defaultAbiCoder().encode(
