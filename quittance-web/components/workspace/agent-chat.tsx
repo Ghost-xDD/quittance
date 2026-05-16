@@ -46,7 +46,7 @@ const DEMO_SCRIPT: ScriptStep[] = [
   },
   {
     kind: "agent", delay: 700,
-    content: "Escrow opened. I've locked 0.001 PYUSD in the Quittance escrow contract with sms.kite as seller. The ORACLE adapter will verify delivery from an independent attestor — sms.kite must submit a signed delivery receipt within 300 seconds or the escrow refunds automatically.",
+    content: "Escrow is open. 0.001 PYUSD is locked — sms.kite can't touch it until they post a signed delivery receipt from an independent attestor. If nothing shows up within 300 seconds, the funds come back to you automatically.",
   },
   {
     kind: "reasoning", delay: 800,
@@ -78,7 +78,7 @@ const DEMO_SCRIPT: ScriptStep[] = [
   },
   {
     kind: "agent", delay: 400,
-    content: "Done. The SMS was delivered and verified on-chain. sms.kite earned 0.001 PYUSD and their reputation score increased by +0.02. Full proof stored in QuittanceRegistry at block 21,436,819.",
+    content: "Delivered and settled. sms.kite posted a valid attestor signature, escrow released 0.001 PYUSD to them, and the proof is recorded in QuittanceRegistry at block 21,436,819. Their reputation score increased by +0.02.",
   },
 
   // ── Act 2: Slashing — sms-cheap submits fraudulent proof ──
@@ -135,7 +135,7 @@ const DEMO_SCRIPT: ScriptStep[] = [
   },
   {
     kind: "agent", delay: 400,
-    content: "sms-cheap.kite attempted to settle with a forged attestor signature. Their 0.5 PYUSD bond has been slashed and your 0.001 PYUSD has been refunded. Their reputation score dropped to 48. I'd recommend avoiding them for future tasks.",
+    content: "sms-cheap.kite tried to settle with a forged signature — wrong attestor entirely. Bond slashed, your 0.001 PYUSD is back. Their reputation is at 48 now. I won't route to them again.",
   },
 ];
 
@@ -482,7 +482,7 @@ function mkMsg(role: MessageRole, content: string, extra?: Partial<ChatMessage>)
 
 const WELCOME: ChatMessage = mkMsg(
   "agent",
-  "Hello. I'm your Quittance buyer agent. Every payment is atomic — you only pay when proof of delivery is on-chain.\n\nWaiting for a live session. Start the buyer agent with:\n\n  npm run buyer-agent\n\nOr press ▶ Demo for a scripted walkthrough without running the full stack.",
+  "I'm a buyer agent running on Kite. Tell me what you need — I'll source a provider, negotiate terms, and handle payment automatically.\n\nI don't trust sellers on their word. Every job is backed by an on-chain escrow: the provider puts up a bond, I lock your payment, and funds only move when cryptographic proof of delivery hits the chain. If they fail to deliver, you get your money back and their bond is slashable.\n\nWhat's the task?",
 );
 
 interface AgentChatProps {
@@ -515,8 +515,13 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
     if (!msg) return;
 
     if (ev.kind === "user") {
-      // New live session — reset chat
-      setMessages([WELCOME, msg]);
+      // New live session — reset chat (dedupe if the UI already added the
+      // user message optimistically via handleUserSend).
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        const alreadyShown = last?.role === "user" && last.content === (ev.content ?? "");
+        return alreadyShown ? prev : [WELCOME, msg];
+      });
     } else {
       setMessages((prev) => [...prev, msg]);
     }
@@ -622,13 +627,24 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
     }
   }, []); // eslint-disable-line
 
-  function handleUserSend(text: string) {
+  async function handleUserSend(text: string) {
     addMsg(mkMsg("user", text));
-    setTimeout(() => {
-      addMsg(
-        mkMsg("agent", "I've received your request. For live agent execution, connect this interface to the running quittance-agents process. In the meantime, you can press ▶ Demo to see a scripted walkthrough.")
-      );
-    }, 800);
+    try {
+      const res = await fetch("/api/run-task", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ task: text }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "unknown" }));
+        addMsg(mkMsg("agent", `Could not start agent: ${err.error ?? res.statusText}`));
+      }
+      // On success the agent emits events back through the SSE stream —
+      // no need to add a message here; the "user" event will arrive and
+      // reset the chat automatically.
+    } catch (e: any) {
+      addMsg(mkMsg("agent", `Network error reaching /api/run-task: ${e.message}`));
+    }
   }
 
   return (
