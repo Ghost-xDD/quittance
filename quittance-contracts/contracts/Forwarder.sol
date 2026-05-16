@@ -9,32 +9,23 @@ import "./types/QuittanceTypes.sol";
 
 /// @notice EIP-712 meta-transaction forwarder.
 ///
-///         Enables buyer and seller agents to interact with the Quittance
-///         protocol without holding native KITE gas. The forwarder:
+///         Enables buyer and seller agents to open escrows and claim refunds
+///         without holding native KITE gas. The relayer submits the transaction
+///         and the project KITE gas fund covers the cost.
 ///
-///           1. Verifies an EIP-712 typed message signed by the agent's Passport.
-///           2. Executes the requested protocol action (openEscrow / postQuittance / refund).
-///           3. Reimburses the relayer in settlement token from the agent's gasFeeBudget.
+///         Design (v0 simplified):
+///           - The Forwarder authenticates the buyer's EIP-712 signature.
+///           - The buyer approves the Escrow contract directly for `amount`.
+///           - The Forwarder calls Escrow.openEscrow() which pulls from buyer.
+///           - No token handling in the Forwarder itself. Gas costs paid by relayer.
 ///
-///         Two typed messages are supported:
+///         This avoids the double-pull problem (Forwarder + Escrow both pulling)
+///         and keeps the Forwarder stateless and funds-free.
 ///
-///           ForwardOpenEscrow — signed by buyer, opens an escrow.
-///           ForwardRefund     — signed by buyer, claims a refund after deadline.
+///         Gas reimbursement for v0: relayer runs on a project-funded KITE wallet.
+///         USDC fee-based reimbursement is a v1 upgrade tracked in the spec (§5.9.3).
 ///
-///         PostQuittance is submitted directly by the seller (or via the SDK's
-///         relayer endpoint); the seller has the Passport key and can sign tx.
-///
-///         Gas reimbursement (v0 simplified model):
-///           The gasFeeBudget included in ForwardOpenEscrow is held in Escrow.
-///           On settle/refund, a flat relayerFee (set by owner) is deducted from
-///           the gasFeeBudget and transferred to tx.origin (the relayer's EOA).
-///           Unused budget refunds to buyer. No oracle rate needed in v0.
-///
-///         Replay protection: every ForwardOpenEscrow nonce is consumed by
-///         Escrow.nextNonce(); ForwardRefund is replayable only once (Escrow
-///         enforces idempotency on refund).
-///
-///         Operator can pause the forwarder in an emergency (sets `paused`).
+///         Operator can pause the forwarder in an emergency.
 contract Forwarder is Ownable, EIP712 {
     using ECDSA for bytes32;
     using SafeERC20 for IERC20;
@@ -42,7 +33,7 @@ contract Forwarder is Ownable, EIP712 {
     // ─── Typed message type hashes ─────────────────────────────────────────
 
     bytes32 public constant FORWARD_OPEN_ESCROW_TYPEHASH = keccak256(
-        "ForwardOpenEscrow(address buyerPassport,address sellerPassport,bytes32 requestHash,uint256 amount,uint256 gasFeeBudget,uint64 deadline,uint8 proofType,uint8 minBondTier,uint64 nonce)"
+        "ForwardOpenEscrow(address buyerPassport,address sellerPassport,bytes32 requestHash,uint256 amount,uint64 deadline,uint8 proofType,uint8 minBondTier,uint64 nonce)"
     );
 
     bytes32 public constant FORWARD_REFUND_TYPEHASH = keccak256(
@@ -52,11 +43,6 @@ contract Forwarder is Ownable, EIP712 {
     // ─── State ─────────────────────────────────────────────────────────────
 
     Escrow  public immutable escrow;
-    IERC20  public immutable token;
-
-    /// @notice Flat relayer fee per meta-tx, in token base units.
-    ///         Operator sets this to approximately cover gas costs.
-    uint256 public relayerFee;
 
     bool    public paused;
 
@@ -64,7 +50,6 @@ contract Forwarder is Ownable, EIP712 {
 
     event EscrowForwarded(bytes32 indexed paymentId, address indexed buyer, address indexed relayer);
     event RefundForwarded(bytes32 indexed paymentId, address indexed buyer, address indexed relayer);
-    event RelayerFeeUpdated(uint256 oldFee, uint256 newFee);
     event Paused(bool state);
 
     // ─── Structs ───────────────────────────────────────────────────────────
@@ -74,7 +59,6 @@ contract Forwarder is Ownable, EIP712 {
         address sellerPassport;
         bytes32 requestHash;
         uint256 amount;
-        uint256 gasFeeBudget;
         uint64  deadline;
         uint8   proofType;
         uint8   minBondTier;
