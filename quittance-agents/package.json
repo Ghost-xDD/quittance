@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "preflight": "tsx scripts/preflight.ts",
     "setup": "tsx scripts/setup-agents.ts",
     "smoke": "tsx scripts/e2e-smoke.ts"
   },

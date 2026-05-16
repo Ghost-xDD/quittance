@@ -27,8 +27,8 @@ import {
   ProofType,
 } from "../lib/contracts";
 
-// 0.01 USDT per payment
-const PAYMENT_AMOUNT = ethers.parseUnits("0.01", 18);
+// 0.001 PYUSD per payment (conservative — keeps most of the 1 PYUSD buyer balance)
+const PAYMENT_AMOUNT = ethers.parseUnits("0.001", 18);
 // 5-minute delivery window
 const DEADLINE_OFFSET = 300n;
 
