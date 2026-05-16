@@ -1,0 +1,198 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------- *
+ *  Quittance — shared editorial tokens with Tessera reference       *
+ *  Dark : warm black ink + cream paper text                         *
+ *  Light: cream paper ground + deep ink text                        *
+ * ---------------------------------------------------------------- */
+
+:root,
+:root[data-theme="dark"] {
+  /* Cool near-black — tiny blue trace makes warm marigold / sage pop harder */
+  --vellum:        #080c10;
+  --vellum-2:      #0d1117;
+  --vellum-3:      #141b22;
+  --seam:       #1f2a35;
+  --seam-2:     #2a3a48;
+
+  --print:        #f5efe2;
+  --print-dim:    #c9c1b1;
+  --print-faint:  #7d756a;
+  --print-ghost:  #4a443c;
+
+  --seal:      #d4a24c;
+  --seal-deep: #b07e2a;
+  --sage:          #8a9b80;
+  --crimson:       #b8553a;
+
+  --grain-opacity: 0.05;
+  --grain-blend:   overlay;
+  --field-blend:    soft-light;
+  /* Glow stays marigold but slightly more saturated against the cooler ground */
+  --glow-color-r:  220;
+  --glow-color-g:  158;
+  --glow-color-b:  60;
+  --glow-blend:    screen;
+  --shadow-edge:   rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --vellum:        #f5efe2;
+  --vellum-2:      #ece5d3;
+  --vellum-3:      #ddd3bd;
+  --seam:       #d2c8b1;
+  --seam-2:     #b8ac90;
+
+  --print:        #14110d;
+  --print-dim:    #3a342c;
+  --print-faint:  #6e655a;
+  --print-ghost:  #a89e8d;
+
+  --seal:      #b07e2a;
+  --seal-deep: #8a611a;
+  --sage:          #5e7256;
+  --crimson:       #9e3a22;
+
+  --grain-opacity: 0.045;
+  --grain-blend:   multiply;
+  --field-blend:    multiply;
+  --glow-color-r:  176;
+  --glow-color-g:  126;
+  --glow-color-b:  42;
+  --glow-blend:    multiply;
+  --shadow-edge:   rgba(20, 17, 13, 0.12);
+
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-vellum:          var(--vellum);
+  --color-vellum-2:        var(--vellum-2);
+  --color-vellum-3:        var(--vellum-3);
+  --color-seam:         var(--seam);
+  --color-seam-2:       var(--seam-2);
+  --color-print:        var(--print);
+  --color-print-dim:    var(--print-dim);
+  --color-print-faint:  var(--print-faint);
+  --color-print-ghost:  var(--print-ghost);
+  --color-seal:     var(--seal);
+  --color-seal-deep: var(--seal-deep);
+  --color-sage:         var(--sage);
+  --color-crimson:      var(--crimson);
+
+  --font-display: var(--font-fraunces);
+  --font-sans:    var(--font-geist);
+  --font-mono:    var(--font-jetbrains-mono);
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body {
+  background: var(--vellum);
+  color: var(--print);
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "ss01", "ss02", "cv11";
+  transition: background 0.45s ease, color 0.45s ease;
+}
+
+.receipt-grid {
+  background-image:
+    linear-gradient(var(--seam) 1px, transparent 1px),
+    linear-gradient(90deg, var(--seam) 1px, transparent 1px);
+  background-size: 80px 80px;
+  background-position: -1px -1px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black 0%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black 0%, transparent 75%);
+}
+
+/*
+ * Halftone dot matrix. Each 2.5px cell has a centred dot; the dot radius
+ * and opacity are theme-controlled. Evokes printed receipt paper up close.
+ */
+.grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle at 50% 50%,
+    rgb(140, 130, 118) 0.55px,
+    transparent 0.55px
+  );
+  background-size: 2.5px 2.5px;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: var(--grain-blend);
+}
+
+.num {
+  font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
+  font-feature-settings: "tnum", "zero";
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+button:not(:disabled),
+[role="button"]:not(:disabled),
+summary,
+label[for],
+input[type="submit"],
+input[type="button"],
+input[type="reset"],
+input[type="radio"],
+input[type="checkbox"],
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+*:focus-visible {
+  outline: 1px solid var(--seal);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+::selection { background: var(--seal); color: var(--vellum); }
+
+/* ─── QuittanceField cell animations ─────────────────────────── */
+
+/*
+ * Normal lifecycle: PENDING (marigold dim) → DELIVERED (brighter) →
+ * SETTLED (sage pulse) → fade to nothing.
+ * No grid lines appear — the cell simply materialises and vanishes.
+ */
+@keyframes qcell-normal {
+  0%   { opacity: 0;    background: var(--seal); border-radius: 3px; }
+  8%   { opacity: 0.28; background: var(--seal); }
+  42%  { opacity: 0.48; background: var(--seal); }
+  62%  { opacity: 0.55; background: var(--sage);     }
+  82%  { opacity: 0.30; background: var(--sage);     }
+  100% { opacity: 0;    background: var(--sage);     }
+}
+
+/* SLASHED: crimson, harsh, quick — economic penalty made visible */
+@keyframes qcell-slashed {
+  0%   { opacity: 0;    background: var(--crimson); border-radius: 3px; }
+  10%  { opacity: 0.65; background: var(--crimson); }
+  60%  { opacity: 0.45; background: var(--crimson); }
+  100% { opacity: 0;    background: var(--crimson); }
+}
+
+/* ─── StampReveal print-head sweep ───────────────────────────── */
+
+/*
+ * The thin marigold bar that travels across the text as characters are
+ * "inked onto" the surface. translateX from 0 to 100% of parent width.
+ */
+@keyframes print-head-sweep {
+  0%   { transform: translateX(0%);    opacity: 0.9; }
+  92%  { transform: translateX(100%);  opacity: 0.9; }
+  100% { transform: translateX(100%);  opacity: 0;   }
+}
