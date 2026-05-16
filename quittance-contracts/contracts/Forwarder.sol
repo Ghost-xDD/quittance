@@ -72,23 +72,15 @@ contract Forwarder is Ownable, EIP712 {
 
     // ─── Constructor ───────────────────────────────────────────────────────
 
-    constructor(address _escrow, address _token, uint256 _relayerFee)
+    constructor(address _escrow)
         Ownable(msg.sender)
         EIP712("QuittanceForwarder", "1")
     {
         require(_escrow != address(0), "Forwarder: zero escrow");
-        require(_token  != address(0), "Forwarder: zero token");
-        escrow      = Escrow(_escrow);
-        token       = IERC20(_token);
-        relayerFee  = _relayerFee;
+        escrow = Escrow(_escrow);
     }
 
     // ─── Admin ─────────────────────────────────────────────────────────────
-
-    function setRelayerFee(uint256 fee) external onlyOwner {
-        emit RelayerFeeUpdated(relayerFee, fee);
-        relayerFee = fee;
-    }
 
     function setPaused(bool _paused) external onlyOwner {
         paused = _paused;
@@ -99,10 +91,12 @@ contract Forwarder is Ownable, EIP712 {
 
     /// @notice Execute a gasless openEscrow on behalf of a buyer.
     ///
-    ///         The buyer signs a ForwardOpenEscrow message covering all
-    ///         escrow parameters. The relayer (msg.sender) submits and is
-    ///         reimbursed `relayerFee` in settlement token from the
-    ///         gasFeeBudget already pulled into Escrow.
+    ///         The buyer signs a ForwardOpenEscrow message and pre-approves
+    ///         the Escrow contract directly for `amount` tokens. The Forwarder
+    ///         authenticates the signature and calls Escrow.openEscrow(), which
+    ///         pulls `amount` from the buyer. No funds pass through the Forwarder.
+    ///
+    ///         Gas is paid by the relayer (project-funded KITE wallet for v0).
     ///
     /// @param p         Escrow parameters, must match what buyer signed.
     /// @param buyerSig  EIP-712 signature from buyerPassport over p.
@@ -112,14 +106,12 @@ contract Forwarder is Ownable, EIP712 {
     ) external returns (bytes32 paymentId) {
         require(!paused, "Forwarder: paused");
 
-        // Verify buyer's EIP-712 signature
         bytes32 structHash = keccak256(abi.encode(
             FORWARD_OPEN_ESCROW_TYPEHASH,
             p.buyerPassport,
             p.sellerPassport,
             p.requestHash,
             p.amount,
-            p.gasFeeBudget,
             p.deadline,
             p.proofType,
             p.minBondTier,
@@ -129,16 +121,7 @@ contract Forwarder is Ownable, EIP712 {
         address signer = digest.recover(buyerSig);
         require(signer == p.buyerPassport, "Forwarder: invalid buyer signature");
 
-        // Pull total amount + gasFeeBudget from buyer in one token transfer.
-        // Buyer must have approved Forwarder for (amount + gasFeeBudget).
-        uint256 total = p.amount + p.gasFeeBudget;
-        token.safeTransferFrom(p.buyerPassport, address(this), total);
-
-        // Approve Escrow to pull the same amount (Escrow calls transferFrom internally).
-        // We give a one-time allowance per open call.
-        token.forceApprove(address(escrow), total);
-
-        // Build paymentId (mirrors Escrow's derivation using the nonce)
+        // paymentId derivation (must match Escrow's makePaymentId logic)
         paymentId = keccak256(abi.encode(
             p.buyerPassport,
             p.sellerPassport,
@@ -147,10 +130,8 @@ contract Forwarder is Ownable, EIP712 {
             bytes32(uint256(p.nonce))
         ));
 
-        // Open the escrow. Escrow pulls `amount` from Forwarder (via the allowance above).
-        // gasFeeBudget stays in Forwarder for now and is distributed at settle/refund.
-        // For v0 simplicity: Forwarder passes (amount) to Escrow, keeps gasFeeBudget.
-        token.forceApprove(address(escrow), p.amount);
+        // Buyer must have approved Escrow for at least `amount` before signing.
+        // Forwarder does not handle tokens — Escrow pulls from buyer directly.
         escrow.openEscrow(
             paymentId,
             p.buyerPassport,
@@ -159,17 +140,6 @@ contract Forwarder is Ownable, EIP712 {
             p.deadline,
             ProofType(p.proofType)
         );
-
-        // Reimburse relayer immediately from gasFeeBudget (v0: flat fee).
-        uint256 fee = relayerFee > p.gasFeeBudget ? p.gasFeeBudget : relayerFee;
-        if (fee > 0) {
-            token.safeTransfer(tx.origin, fee);
-        }
-        // Refund unused gasFeeBudget to buyer.
-        uint256 refundable = p.gasFeeBudget - fee;
-        if (refundable > 0) {
-            token.safeTransfer(p.buyerPassport, refundable);
-        }
 
         emit EscrowForwarded(paymentId, p.buyerPassport, tx.origin);
     }
