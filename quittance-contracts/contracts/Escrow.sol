@@ -126,13 +126,13 @@ contract Escrow is Ownable {
     }
 
     /// @notice Return funds to buyer and slash seller's bond.
-    ///         Callable by the buyer after the delivery deadline has passed.
+    ///         Permissionless: callable by anyone after the delivery deadline has passed.
+    ///         The buyer is always the one who receives the refund regardless of caller.
     function refund(bytes32 paymentId) external {
         EscrowRecord storage rec = escrows[paymentId];
         require(rec.buyer != address(0), "Escrow: not found");
         require(!rec.settled && !rec.refunded, "Escrow: already resolved");
         require(block.timestamp > rec.deadline, "Escrow: deadline not passed");
-        require(msg.sender == rec.buyer, "Escrow: only buyer");
 
         rec.refunded = true;
         failedCount[rec.seller]++;

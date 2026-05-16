@@ -44,24 +44,11 @@ contract Forwarder is Ownable, EIP712 {
     // ─── Typed message type hashes ─────────────────────────────────────────
 
     bytes32 public constant FORWARD_OPEN_ESCROW_TYPEHASH = keccak256(
-        "ForwardOpenEscrow("
-        "address buyerPassport,"
-        "address sellerPassport,"
-        "bytes32 requestHash,"
-        "uint256 amount,"
-        "uint256 gasFeeBudget,"
-        "uint64  deadline,"
-        "uint8   proofType,"
-        "uint8   minBondTier,"
-        "uint64  nonce"
-        ")"
+        "ForwardOpenEscrow(address buyerPassport,address sellerPassport,bytes32 requestHash,uint256 amount,uint256 gasFeeBudget,uint64 deadline,uint8 proofType,uint8 minBondTier,uint64 nonce)"
     );
 
     bytes32 public constant FORWARD_REFUND_TYPEHASH = keccak256(
-        "ForwardRefund("
-        "bytes32 paymentId,"
-        "address buyerPassport"
-        ")"
+        "ForwardRefund(bytes32 paymentId,address buyerPassport)"
     );
 
     // ─── State ─────────────────────────────────────────────────────────────
