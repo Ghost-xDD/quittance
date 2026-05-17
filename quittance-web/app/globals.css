@@ -92,6 +92,11 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+html {
+  /* Prevent horizontal “rubber-band” scroll from off-canvas decor / wide grids */
+  overflow-x: clip;
+}
+
 html, body {
   background: var(--vellum);
   color: var(--print);

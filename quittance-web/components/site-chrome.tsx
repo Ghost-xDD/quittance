@@ -114,7 +114,7 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="relative flex flex-1 flex-col">{children}</main>
+      <main className="relative flex min-w-0 flex-1 flex-col">{children}</main>
 
       <footer className="border-t border-seam/60 bg-vellum-2/40">
         <div className="mx-auto flex max-w-[1320px] flex-col gap-3 px-4 py-6 text-[10px] text-print-faint md:flex-row md:items-center md:justify-between md:px-10 md:py-7 md:text-[11px]">

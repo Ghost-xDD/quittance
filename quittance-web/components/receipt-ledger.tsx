@@ -123,7 +123,7 @@ export function ReceiptLedger() {
 
   return (
     <section className="relative border-y border-seam bg-vellum-2/30">
-      <div className="mx-auto max-w-[1320px] px-6 py-8 md:px-10 md:py-10">
+      <div className="mx-auto min-w-0 max-w-[1320px] px-6 py-8 md:px-10 md:py-10">
         <div className="flex flex-wrap items-baseline justify-between gap-4 border-b border-seam pb-4">
           <div className="flex items-baseline gap-4">
             <span className="num text-[11px] uppercase tracking-[0.32em] text-seal">
@@ -150,7 +150,8 @@ export function ReceiptLedger() {
           </div>
         </div>
 
-        <ol className="num mt-2 divide-y divide-rule/60 text-[12.5px]">
+        <div className="min-w-0 overflow-x-auto md:overflow-x-visible">
+        <ol className="num mt-2 w-max divide-y divide-rule/60 text-[12.5px] md:w-full">
           <AnimatePresence initial={false} mode="popLayout">
             {rows.map((r) => (
               <motion.li
@@ -160,7 +161,7 @@ export function ReceiptLedger() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 14, transition: { duration: 0.25 } }}
                 transition={{ type: "spring", stiffness: 320, damping: 32 }}
-                className="grid grid-cols-[68px_110px_1fr_120px_120px] items-center gap-3 py-3 md:grid-cols-[78px_140px_1fr_160px_180px]"
+                className="grid w-max min-w-full grid-cols-[68px_110px_minmax(0,1fr)_120px_120px] items-center gap-3 py-3 md:w-full md:grid-cols-[78px_140px_minmax(0,1fr)_160px_180px]"
               >
                 <span className="text-print-faint">{r.t}</span>
                 <StatusPill status={r.status} />
@@ -174,6 +175,7 @@ export function ReceiptLedger() {
             ))}
           </AnimatePresence>
         </ol>
+        </div>
       </div>
     </section>
   );

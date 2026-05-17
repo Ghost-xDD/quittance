@@ -19,7 +19,7 @@ export default function WorkspacePage() {
 
   return (
     <div
-      className="flex h-screen flex-col overflow-hidden bg-vellum text-print"
+      className="flex h-screen min-w-0 flex-col overflow-hidden bg-vellum text-print"
       data-theme="light"
     >
       {/* Workspace nav bar — minimal, no full site chrome */}
@@ -49,15 +49,15 @@ export default function WorkspacePage() {
         </div>
       </header>
 
-      {/* Three-panel body */}
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* Left: Chat panel (~70%) */}
-        <div className="flex min-w-0 flex-1 flex-col border-r border-seam/60">
+      {/* Three-panel body — stack on small screens so min-width rails never widen the viewport */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+        {/* Left: Chat panel (~70% on md+) */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col border-seam/60 md:border-r">
           <AgentChat onQuittanceEvent={handleQuittanceEvent} />
         </div>
 
-        {/* Right: 30% width, split 50/50 vertically */}
-        <div className="flex w-[30%] min-w-[280px] max-w-[400px] flex-col border-l border-seam/30">
+        {/* Right: leaderboard + feed — full width under chat on mobile */}
+        <div className="flex h-[min(420px,46vh)] min-h-0 w-full shrink-0 flex-col border-t border-seam/30 md:h-auto md:w-[30%] md:min-w-[280px] md:max-w-[400px] md:border-l md:border-t-0">
           {/* Top half: Leaderboard */}
           <div className="flex h-1/2 min-h-0 flex-col border-b border-seam/60">
             <LeaderboardPanel />
