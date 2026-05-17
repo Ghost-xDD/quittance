@@ -1,0 +1,22 @@
+# railway.toml — Quittance seller agents
+#
+# Three services share this root directory (quittance-agents/).
+# Each Railway service overrides [deploy].startCommand via its own
+# service settings in the Railway dashboard:
+#
+#   email-pro    →  npm run seller-email
+#   email-cheap  →  npm run seller-email
+#                   (with SELLER_CHEAP_MODE=true + SELLER_EMAIL_NAME=email-cheap.kite)
+#   image        →  npm run seller-image
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+# Overridden per-service in the Railway dashboard — set to the appropriate
+# npm script for each service (see comment above).
+startCommand = "npm run seller-email"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

@@ -1,0 +1,10 @@
+# nixpacks.toml — build config for Railway
+# Pins Node 20 LTS; install only (no separate compile step — tsx runs TS directly).
+
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["npm install"]
+
+# start is intentionally omitted — set per-service in railway.toml / Railway dashboard

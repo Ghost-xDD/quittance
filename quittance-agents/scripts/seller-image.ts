@@ -27,7 +27,8 @@ import { makeSDK, aaAddress, aaSend, encodeCall } from "../lib/aa";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const PORT         = parseInt(process.env.SELLER_IMAGE_PORT ?? "4004");
+// Railway injects PORT; SELLER_IMAGE_PORT is the local-dev fallback.
+const PORT         = parseInt(process.env.PORT ?? process.env.SELLER_IMAGE_PORT ?? "4004");
 const USDC_ADDR    = process.env.USDC_ADDRESS ?? process.env.PYUSD_ADDRESS!;
 const PRICE        = BigInt(process.env.IMAGE_PRICE_UNITS ?? "1000"); // 0.001 USDC
 const DEADLINE_SEC = 300;
@@ -262,6 +263,11 @@ async function main() {
       return;
     }
 
+    if (req.method === "GET" && req.url === "/health") {
+      jsonRes(res, 200, { ok: true, seller: AGENT_NAME });
+      return;
+    }
+
     if (req.method !== "POST" || req.url !== "/task") {
       jsonRes(res, 404, { error: "POST /task only" });
       return;
@@ -383,8 +389,8 @@ async function main() {
     }
   });
 
-  server.listen(PORT, () => {
-    log("boot", `\n  ${AGENT_NAME} listening on http://localhost:${PORT}/task`);
+  server.listen(PORT, "0.0.0.0", () => {
+    log("boot", `\n  ${AGENT_NAME} listening on http://0.0.0.0:${PORT}/task`);
     log("boot", `  Protocol: x402  scheme=gokite-aa  facilitator=none`);
     log("boot", `  Price: ${fmt(PRICE)} USDC/image  Provider: Pollinations.ai (free)\n`);
   });
