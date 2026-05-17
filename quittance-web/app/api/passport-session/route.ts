@@ -25,8 +25,22 @@ interface KpassSessionCreate {
 }
 
 interface KpassSessionStatus {
-  status: string;
-  session_token?: string;
+  status: string;          // "success" | "pending" | "error"
+  session_id?: string;     // set when approved
+  session?: {
+    id: string;
+    status: string;        // "active"
+    expires_at?: string;
+    delegation?: {
+      payment_policy?: {
+        max_amount_per_tx: string;
+        max_total_amount: string;
+        assets: string[];
+      };
+    };
+    usage?: { spent_total: string; reserved_total: string };
+  };
+  session_token?: string;  // some versions return this directly
   error?: string;
   delegation?: {
     payment_policy: {
@@ -46,17 +60,20 @@ export async function POST(req: NextRequest) {
 
   const maxPerTx = body.maxAmountPerTx ?? 1;
   const maxTotal = body.maxTotalAmount ?? 1;
-  const summary = body.taskSummary ?? "Autonomous SMS delivery agent — pays via x402, verifies delivery on Kite chain via Quittance escrow";
+  const summary = body.taskSummary ?? "Quittance buyer agent — email and image delivery via x402 on Kite Mainnet";
 
-  const cmd = [
-    "kpass agent:session create",
-    `--task-summary ${JSON.stringify(summary)}`,
-    `--max-amount-per-tx ${maxPerTx}`,
-    `--max-total-amount ${maxTotal}`,
-    "--ttl 24h",
-    "--assets USDC",
-    "--output json",
-  ].join(" ");
+  const delegation = JSON.stringify({
+    task: { summary },
+    payment_policy: {
+      allowed_payment_approaches: ["x402"],
+      assets: ["USDC"],
+      max_amount_per_tx: String(maxPerTx),
+      max_total_amount: String(maxTotal),
+      ttl_seconds: 86400,
+    },
+  });
+
+  const cmd = `kpass agent:session create --delegation ${JSON.stringify(delegation)} --output json`;
 
   try {
     const { stdout } = await execAsync(cmd, { timeout: 20_000 });
@@ -90,13 +107,24 @@ export async function GET(req: NextRequest) {
     const { stdout } = await execAsync(cmd, { timeout: 15_000 });
     const data = JSON.parse(stdout) as KpassSessionStatus;
 
-    const approved = data.status === "approved" || data.status === "active";
+    // kpass returns status:"success" when approved (session.status === "active")
+    const approved =
+      data.status === "success" ||
+      data.status === "approved" ||
+      data.session?.status === "active";
+
+    // session token: prefer session_token field, fall back to session.id
+    const sessionToken = data.session_token ?? data.session_id ?? data.session?.id;
+
+    const policy =
+      data.session?.delegation?.payment_policy ??
+      data.delegation?.payment_policy;
 
     return NextResponse.json({
       status: data.status,
       approved,
-      sessionToken: data.session_token,
-      policy: data.delegation?.payment_policy,
+      sessionToken,
+      policy,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "kpass error";

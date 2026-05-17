@@ -20,7 +20,10 @@ type Step =
   | "awaiting-approval"
   | "polling"
   | "approved"
+  | "paste"    // fallback: kpass not available in this environment
   | "error";
+
+const DELEGATION_CMD = `kpass agent:session create --delegation '{"task":{"summary":"Quittance buyer agent — email and image delivery via x402 on Kite Mainnet"},"payment_policy":{"allowed_payment_approaches":["x402"],"assets":["USDC"],"max_amount_per_tx":"0.01","max_total_amount":"1","ttl_seconds":86400}}' --output json`;
 
 export function PassportConnectModal({ onConnected, onSkip }: PassportConnectModalProps) {
   const [step, setStep] = useState<Step>("idle");
@@ -28,6 +31,9 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
   const [policy, setPolicy] = useState<Policy | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [copied, setCopied] = useState(false);
+  const [cmdCopied, setCmdCopied] = useState(false);
+  const [pasteToken, setPasteToken] = useState("");
+  const [pasteError, setPasteError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -68,7 +74,7 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
         body: JSON.stringify({
           maxAmountPerTx: 1,
           maxTotalAmount: 1,
-          taskSummary: "Autonomous SMS delivery agent — pays via x402, verifies delivery on Kite chain via Quittance escrow",
+          taskSummary: "Quittance buyer agent — email and image delivery via x402 on Kite Mainnet",
         }),
       });
       const data = await res.json() as {
@@ -78,8 +84,14 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
         error?: string;
       };
 
+      // kpass not installed in this environment — fall back to paste-token mode
+      if (data.error?.includes("kpass") || data.error?.includes("command not found")) {
+        setStep("paste");
+        return;
+      }
+
       if (data.error || !data.approvalUrl || !data.requestId) {
-        setErrorMsg(data.error ?? "Failed to create session — is kpass installed?");
+        setErrorMsg(data.error ?? "Failed to create session.");
         setStep("error");
         return;
       }
@@ -100,6 +112,19 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  }
+
+  function handleCopyCmd() {
+    navigator.clipboard.writeText(DELEGATION_CMD).then(() => {
+      setCmdCopied(true);
+      setTimeout(() => setCmdCopied(false), 2000);
+    });
+  }
+
+  function handlePasteConnect() {
+    const t = pasteToken.trim();
+    if (!t) { setPasteError("Paste your session token first."); return; }
+    onConnected(t);
   }
 
   return (
@@ -131,11 +156,10 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
             {step === "idle" && (
               <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <p className="mb-5 text-[13px] leading-relaxed text-print-dim">
-                  This agent pays SMS providers via{" "}
+                  This agent pays providers via{" "}
                   <span className="font-mono text-seal">x402</span> — an autonomous
                   payment protocol. You&apos;ll sign a spending budget using your Kite
-                  Passport passkey. Nothing is charged until a service is delivered
-                  and verified on-chain.
+                  Passport passkey. Nothing is charged until delivery is verified on-chain.
                 </p>
 
                 <div className="mb-5 rounded-sm border border-seam/60 bg-vellum-2/60 px-4 py-3">
@@ -145,7 +169,7 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
                   <div className="flex items-baseline gap-2">
                     <span className="font-display text-[22px] font-light text-print">1</span>
                     <span className="num text-[11px] uppercase tracking-widest text-seal">USDC</span>
-                    <span className="num text-[10px] text-print-ghost">· 1 tx max · 24h TTL</span>
+                    <span className="num text-[10px] text-print-ghost">· 0.01 max/tx · 24h TTL</span>
                   </div>
                 </div>
 
@@ -180,7 +204,6 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
                   </span>
                 </div>
 
-                {/* Approval URL */}
                 <div className="mb-4 overflow-hidden rounded-sm border border-seal/30 bg-vellum-2/60">
                   <a
                     href={approvalUrl}
@@ -239,6 +262,46 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
               </motion.div>
             )}
 
+            {/* Paste-token fallback — shown when kpass is not available server-side */}
+            {step === "paste" && (
+              <motion.div key="paste" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
+                <p className="text-[12.5px] leading-relaxed text-print-dim">
+                  Run this in your terminal, approve with your passkey, then paste the{" "}
+                  <code className="rounded bg-vellum-3 px-1 text-[11px] text-seal">session_token</code> below.
+                </p>
+
+                <div className="relative rounded-sm border border-seam/50 bg-vellum-3/40">
+                  <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[9.5px] leading-relaxed text-print-dim whitespace-pre-wrap break-all">
+                    {DELEGATION_CMD}
+                  </pre>
+                  <button
+                    onClick={handleCopyCmd}
+                    className="absolute right-2 top-2 num rounded border border-seam/60 bg-vellum px-2 py-0.5 text-[9px] uppercase tracking-[0.18em] text-print-ghost transition hover:text-print"
+                  >
+                    {cmdCopied ? "✓" : "Copy"}
+                  </button>
+                </div>
+
+                <div>
+                  <input
+                    type="text"
+                    value={pasteToken}
+                    onChange={(e) => { setPasteToken(e.target.value); setPasteError(""); }}
+                    placeholder="Paste session_token here…"
+                    className="w-full rounded-sm border border-seam/60 bg-vellum-2/60 px-3 py-2 font-mono text-[11px] text-print placeholder:text-print-ghost focus:border-seal/60 focus:outline-none transition-colors"
+                  />
+                  {pasteError && <p className="mt-1 text-[11px] text-crimson">{pasteError}</p>}
+                </div>
+
+                <button
+                  onClick={handlePasteConnect}
+                  className="w-full rounded-sm bg-seal px-4 py-2.5 text-[12px] font-medium uppercase tracking-[0.18em] text-white transition hover:bg-seal/90"
+                >
+                  Connect →
+                </button>
+              </motion.div>
+            )}
+
             {step === "error" && (
               <motion.div key="err" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <div className="mb-4 rounded-sm border border-crimson/30 bg-crimson/5 px-4 py-3 text-[12px] text-crimson">
@@ -259,9 +322,9 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
         {step !== "approved" && (
           <div className="border-t border-seam/40 px-6 py-3 flex items-center justify-between">
             <span className="text-[11px] text-print-ghost leading-relaxed">
-              Need the CLI?{" "}
+              Need kpass?{" "}
               <code className="rounded bg-vellum-2 px-1 py-0.5 text-[10px] text-print-dim">
-                npm i -g @gokite/kpass-cli
+                npm i -g kpass
               </code>
             </span>
             <button
