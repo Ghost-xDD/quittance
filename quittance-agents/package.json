@@ -9,7 +9,7 @@
     "integration": "tsx scripts/integration.ts",
     "seller-sms": "tsx scripts/seller-sms.ts",
     "seller-email": "tsx scripts/seller-email.ts",
-    "seller-email-cheap": "SELLER_CHEAP_MODE=true SELLER_EMAIL_PORT=4003 SELLER_EMAIL_NAME=email-cheap.kite SELLER_EMAIL_PRIVATE_KEY=$SELLER_EMAIL_CHEAP_PRIVATE_KEY tsx scripts/seller-email.ts",
+    "seller-email-cheap": "SELLER_CHEAP_MODE=true SELLER_EMAIL_PORT=4003 SELLER_EMAIL_NAME=email-cheap.kite tsx scripts/seller-email.ts",
     "seller-image": "tsx scripts/seller-image.ts",
     "buyer-agent": "tsx scripts/buyer-agent.ts",
     "setup-mainnet": "tsx scripts/setup-mainnet.ts",

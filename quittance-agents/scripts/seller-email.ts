@@ -176,7 +176,7 @@ async function executeTrade(
 <h3>On-chain proof</h3>
 <table>
   <tr><td><strong>Payment ID</strong></td><td><code>${paymentId}</code></td></tr>
-  <tr><td><strong>Escrow tx</strong></td><td><a href="https://scan.gokite.ai/tx/${escrowResult.txHash}">${escrowResult.txHash.slice(0, 20)}…</a></td></tr>
+  <tr><td><strong>Escrow tx</strong></td><td><a href="https://kitescan.ai/tx/${escrowResult.txHash}">${escrowResult.txHash.slice(0, 20)}…</a></td></tr>
   <tr><td><strong>Amount</strong></td><td>${fmt(amount)} USDC</td></tr>
   <tr><td><strong>Seller</strong></td><td><code>${sellerAA}</code></td></tr>
   <tr><td><strong>Buyer</strong></td><td><code>${buyerAA}</code></td></tr>
@@ -254,10 +254,14 @@ async function main() {
   }
   const resend = new Resend(resendKey);
 
-  const sellerKey = process.env.SELLER_EMAIL_PRIVATE_KEY ?? process.env.SELLER_SMS_PRO_PRIVATE_KEY;
+  const sellerKey = CHEAP_MODE
+    ? (process.env.SELLER_EMAIL_CHEAP_PRIVATE_KEY ?? process.env.SELLER_EMAIL_PRIVATE_KEY ?? process.env.SELLER_SMS_PRO_PRIVATE_KEY)
+    : (process.env.SELLER_EMAIL_PRIVATE_KEY ?? process.env.SELLER_SMS_PRO_PRIVATE_KEY);
   const oracleKey = process.env.ORACLE_PRIVATE_KEY;
   if (!sellerKey || !oracleKey) {
-    console.error("Set SELLER_EMAIL_PRIVATE_KEY and ORACLE_PRIVATE_KEY in .env");
+    console.error(CHEAP_MODE
+      ? "Set SELLER_EMAIL_CHEAP_PRIVATE_KEY and ORACLE_PRIVATE_KEY in .env"
+      : "Set SELLER_EMAIL_PRIVATE_KEY and ORACLE_PRIVATE_KEY in .env");
     process.exit(1);
   }
 

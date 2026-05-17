@@ -75,7 +75,7 @@ function logEvent(ev: AgentEvent) {
       break;
     case "quittance":
       const r = ev.receipt!;
-      console.log(`${pre} ${C.green}[quittance]${C.reset} ${r.status}  ${r.seller}  ${r.amount} PYUSD  tx ${r.txHash}`);
+      console.log(`${pre} ${C.green}[quittance]${C.reset} ${r.status}  ${r.seller}  ${r.amount} USDC  tx ${r.txHash}`);
       break;
     case "error":
       console.error(`${pre} ${C.red}[error    ]${C.reset} ${ev.content}`);

@@ -472,7 +472,7 @@ async function toolQuittancePay(
     quittanceTx: r2Body.quittanceTx,
     blockNumber: r2Body.blockNumber,
     usdcAmount:  r2Body.usdcAmount,
-    kitescan:    `https://scan.gokite.ai/tx/${r2Body.quittanceTx}`,
+    kitescan:    `https://kitescan.ai/tx/${r2Body.quittanceTx}`,
   };
 }
 

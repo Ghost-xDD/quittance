@@ -8,7 +8,8 @@ export type AgentEventKind =
   | "action"
   | "quittance"
   | "error"
-  | "done";
+  | "done"
+  | "connected"; // SSE handshake sent by /api/agent-stream on open
 
 export interface QuittanceEventReceipt {
   paymentId: string;
