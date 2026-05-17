@@ -8,6 +8,9 @@
     "smoke": "tsx scripts/e2e-smoke.ts",
     "integration": "tsx scripts/integration.ts",
     "seller-sms": "tsx scripts/seller-sms.ts",
+    "seller-email": "tsx scripts/seller-email.ts",
+    "seller-email-cheap": "SELLER_CHEAP_MODE=true SELLER_EMAIL_PORT=4003 SELLER_EMAIL_NAME=email-cheap.kite SELLER_EMAIL_PRIVATE_KEY=$SELLER_EMAIL_CHEAP_PRIVATE_KEY tsx scripts/seller-email.ts",
+    "seller-image": "tsx scripts/seller-image.ts",
     "buyer-agent": "tsx scripts/buyer-agent.ts",
     "setup-mainnet": "tsx scripts/setup-mainnet.ts",
     "transfer-kite": "tsx scripts/transfer-kite.ts"
@@ -16,7 +19,8 @@
     "dotenv": "^16.4.0",
     "ethers": "^6.13.0",
     "gokite-aa-sdk": "latest",
-    "openai": "^6.38.0"
+    "openai": "^6.38.0",
+    "resend": "^6.12.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
