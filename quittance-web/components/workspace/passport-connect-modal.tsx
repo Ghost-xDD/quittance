@@ -25,7 +25,6 @@ type Step =
 export function PassportConnectModal({ onConnected, onSkip }: PassportConnectModalProps) {
   const [step, setStep] = useState<Step>("idle");
   const [approvalUrl, setApprovalUrl] = useState("");
-  const [requestId, setRequestId] = useState("");
   const [policy, setPolicy] = useState<Policy | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [copied, setCopied] = useState(false);
@@ -86,12 +85,11 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
       }
 
       setApprovalUrl(data.approvalUrl);
-      setRequestId(data.requestId);
       setPolicy(data.policy ?? null);
       setStep("awaiting-approval");
       startPolling(data.requestId);
-    } catch (e: any) {
-      setErrorMsg(e.message ?? "Network error");
+    } catch (e: unknown) {
+      setErrorMsg(e instanceof Error ? e.message : "Network error");
       setStep("error");
     }
   }

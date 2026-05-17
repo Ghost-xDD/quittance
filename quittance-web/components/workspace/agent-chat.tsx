@@ -7,7 +7,6 @@ import type {
   ChatMessage,
   MessageRole,
   ProofType,
-  QuittanceReceipt,
   QuittanceStatus,
   ScriptStep,
 } from "./types";
@@ -150,15 +149,28 @@ const DEMO_SCRIPT: ScriptStep[] = [
 function useStreamText(target: string, speed = 9) {
   const [shown, setShown] = useState("");
   useEffect(() => {
-    setShown("");
-    if (!target) return;
-    let i = 0;
-    const id = setInterval(() => {
-      i += Math.ceil(Math.random() * 3);
-      if (i >= target.length) { setShown(target); clearInterval(id); return; }
-      setShown(target.slice(0, i));
-    }, speed);
-    return () => clearInterval(id);
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setShown("");
+      if (!target) return;
+      let i = 0;
+      intervalId = setInterval(() => {
+        i += Math.ceil(Math.random() * 3);
+        if (i >= target.length) {
+          setShown(target);
+          if (intervalId) clearInterval(intervalId);
+          intervalId = null;
+          return;
+        }
+        setShown(target.slice(0, i));
+      }, speed);
+    });
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+    };
   }, [target, speed]);
   return shown;
 }
@@ -751,7 +763,7 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
         style={{ backgroundImage: "none", background: "transparent" }}
       >
         <div className="mx-auto max-w-[760px] space-y-4">
-          <AnimatePresence initial={false} mode="append">
+          <AnimatePresence initial={false} mode="sync">
             {messages.map((msg, i) => {
               const isLastAgent = msg.role === "agent" && i === messages.length - 1 && lastMsgStreaming;
               return (

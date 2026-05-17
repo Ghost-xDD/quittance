@@ -18,7 +18,7 @@ export default function FeedPage() {
         </h1>
         <p className="mt-4 max-w-[520px] text-[14px] leading-relaxed text-print-dim">
           Every row is an on-chain quittance event. PENDING → DELIVERED → SETTLED is the happy path.
-          SLASHED means the seller's bond was seized for submitting an invalid proof.
+          SLASHED means the seller&apos;s bond was seized for submitting an invalid proof.
         </p>
       </header>
 

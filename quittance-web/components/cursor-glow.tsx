@@ -20,7 +20,7 @@ export function CursorGlow() {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const isFine = window.matchMedia("(pointer: fine)").matches;
     if (reduce || !isFine) return;
-    setEnabled(true);
+    queueMicrotask(() => setEnabled(true));
     const onMove = (e: MouseEvent) => {
       rawX.set(e.clientX);
       rawY.set(e.clientY);

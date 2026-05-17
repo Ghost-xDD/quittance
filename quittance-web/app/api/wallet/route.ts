@@ -4,7 +4,6 @@ import { NextResponse } from "next/server";
 const RPC_URL    = process.env.RPC_URL ?? "https://rpc.gokite.ai";
 const BUYER_ADDR = process.env.PASSPORT_WALLET_ADDR ?? process.env.BUYER_ADDR ?? "";
 const USDC_ADDR  = process.env.USDC_ADDR ?? "0x7aB6f3ed87C42eF0aDb67Ed95090f8bF5240149e";
-const PYUSD_ADDR = process.env.PYUSD_ADDR ?? USDC_ADDR;
 
 // balanceOf(address) selector
 const BALANCE_OF = "0x70a08231";

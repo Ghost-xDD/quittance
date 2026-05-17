@@ -22,7 +22,7 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setMobileOpen(false);
+    queueMicrotask(() => setMobileOpen(false));
   }, [pathname]);
 
   useEffect(() => {

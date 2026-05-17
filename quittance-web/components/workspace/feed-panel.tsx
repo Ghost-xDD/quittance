@@ -32,8 +32,8 @@ const SEED: QuittanceEvent[] = [
   { id: "5", paymentId: "0x77f52d10", timestamp: nowMs() -128000, seller: "scrape.kite",     adapter: "ZKTLS",     amount: 0.05,  status: "SETTLED" },
 ];
 
-function relTime(ts: number) {
-  const s = Math.floor((Date.now() - ts) / 1000);
+function relTime(ts: number, referenceMs: number) {
+  const s = Math.floor((referenceMs - ts) / 1000);
   if (s < 10) return "just now";
   if (s < 60) return `${s}s ago`;
   const m = Math.floor(s / 60);
@@ -48,12 +48,14 @@ interface FeedPanelProps {
 
 export function FeedPanel({ fullPage = false, injectEvent }: FeedPanelProps) {
   const [events, setEvents] = useState<QuittanceEvent[]>(SEED);
-  const [tick, setTick] = useState(0);
+  const [clock, setClock] = useState(() => Date.now());
 
   // Inject external events (e.g. from the demo engine)
   useEffect(() => {
     if (!injectEvent) return;
-    setEvents((prev) => [injectEvent, ...prev].slice(0, 30));
+    queueMicrotask(() => {
+      setEvents((prev) => [injectEvent, ...prev].slice(0, 30));
+    });
   }, [injectEvent]);
 
   // Simulated live feed
@@ -89,7 +91,7 @@ export function FeedPanel({ fullPage = false, injectEvent }: FeedPanelProps) {
       );
     }, 1200);
 
-    const heartbeat = setInterval(() => setTick((n) => n + 1), 5000);
+    const heartbeat = setInterval(() => setClock(Date.now()), 5000);
 
     return () => {
       clearInterval(spawnInterval);
@@ -102,7 +104,7 @@ export function FeedPanel({ fullPage = false, injectEvent }: FeedPanelProps) {
     settled:  events.filter((e) => e.status === "SETTLED").length,
     inFlight: events.filter((e) => e.status === "PENDING" || e.status === "DELIVERED").length,
     failed:   events.filter((e) => e.status === "REFUNDED" || e.status === "SLASHED").length,
-  }), [events, tick]);
+  }), [events]);
 
   return (
     <div className="flex h-full flex-col">
@@ -146,7 +148,7 @@ export function FeedPanel({ fullPage = false, injectEvent }: FeedPanelProps) {
                 <div className="num mt-0.5 flex items-center gap-1.5 text-[9.5px] text-print-ghost">
                   <span className="text-print-faint">{ev.amount} PYUSD</span>
                   <span>·</span>
-                  <span>{relTime(ev.timestamp)}</span>
+                  <span>{relTime(ev.timestamp, clock)}</span>
                 </div>
               </div>
 
