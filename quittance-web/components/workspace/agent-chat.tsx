@@ -528,7 +528,9 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
   const [isLive, setIsLive] = useState(false);
   const [passportConnected, setPassportConnected] = useState(false);
   const [passportSessionToken, setPassportSessionToken] = useState<string | undefined>();
-  const [showPassportModal, setShowPassportModal] = useState(false);
+  // Show the passport modal immediately on mount in live mode — avoids a
+  // brief flash of the workspace before the SSE handshake triggers it.
+  const [showPassportModal, setShowPassportModal] = useState(!DEMO_AUTO_START);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stoppedRef = useRef(false);
   const passportConnectedRef = useRef(passportConnected);
@@ -580,9 +582,6 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
 
   useLiveStream(handleLiveEvent, (live: boolean) => {
     setIsLive(live);
-    if (live && !passportConnectedRef.current && !DEMO_AUTO_START) {
-      setShowPassportModal(true);
-    }
   });
 
   function scrollToBottom() {
