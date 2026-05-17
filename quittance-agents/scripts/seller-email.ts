@@ -44,13 +44,17 @@ const PORT        = parseInt(process.env.SELLER_EMAIL_PORT ?? "4002");
 const USDC_ADDR   = process.env.USDC_ADDRESS ?? process.env.PYUSD_ADDRESS!;
 const TOKEN_DEC   = parseInt(process.env.TOKEN_DECIMALS ?? "6");
 const PRICE       = BigInt(process.env.EMAIL_PRICE_UNITS ?? "1000"); // 0.001 USDC
-const DEADLINE_SEC = 300;
 const AGENT_NAME  = process.env.SELLER_EMAIL_NAME ?? "email.kite";
 const PROOF_TYPE  = ProofType.ORACLE;
 
 // Cheap mode: open escrow then deliberately miss the deadline (for slash demo).
 const CHEAP_MODE      = process.env.SELLER_CHEAP_MODE === "true";
 const CHEAP_FAIL_RATE = parseFloat(process.env.SELLER_CHEAP_FAIL_RATE ?? "0.8");
+
+// Cheap mode uses a short deadline so refund + slash fire quickly during demo.
+const DEADLINE_SEC = CHEAP_MODE
+  ? parseInt(process.env.SELLER_CHEAP_DEADLINE_SEC ?? "60")
+  : parseInt(process.env.SELLER_DEADLINE_SEC ?? "300");
 
 const FROM_EMAIL = process.env.RESEND_FROM ?? "onboarding@resend.dev";
 
@@ -406,6 +410,7 @@ async function main() {
       return;
     }
 
+    const deadline = p.deadline;
     pending.delete(paymentId);
     log("req", `[R2] X-PAYMENT verified  paymentId=${paymentId.slice(0, 14)}…  buyer=${buyerAA.slice(0, 10)}…`);
 
@@ -439,6 +444,7 @@ async function main() {
         jsonRes(res, 202, {
           paymentId,
           escrowTx: e.escrowTx,
+          deadline: Number(deadline),
           status:   "accepted_not_delivered",
           note:     "Cheap seller accepted payment. Delivery pending. Refund fires at deadline.",
         });

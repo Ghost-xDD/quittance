@@ -33,7 +33,7 @@ import {
   getProvider, getSigner, getContracts,
   fmt, TIER_LABEL,
 } from "../lib/contracts";
-import { makeSDK, aaAddress } from "../lib/aa";
+import { makeSDK, aaAddress, aaSend, encodeCall } from "../lib/aa";
 import { emit, emitAction } from "../lib/events";
 
 // ─── OpenAI client ────────────────────────────────────────────────────────────
@@ -152,18 +152,17 @@ PROTOCOL
   4. All settlement is facilitator-free: the escrow contract IS the settlement venue.
 
 YOUR JOB
-  - Call list_sellers to see available sellers and their on-chain reputation.
-    Each seller has priceUSDC (cost per call) and bond (seller's collateral).
-    Higher bond = more skin-in-the-game = safer for buyer.
-  - Prefer higher bond tier (Gold > Silver > Bronze) and higher success rate.
-    The cheap seller is risky — but if it fails, escrow refunds you and slashes their bond.
-    You can rationally try the cheap one first if the task is not urgent.
-  - Call check_buyer_wallet to verify your USDC allowance covers the price.
-  - Call quittance_pay to execute the x402 payment and get delivery proof.
-  - Report settlement: quittanceTx (on-chain proof), escrowTx, deliverable (imageUrl or messageId).
+  - Call list_sellers to see available sellers and on-chain reputation.
+  - ALWAYS try the cheapest available seller first. The Quittance escrow protects you:
+    if they fail to deliver, you get a full refund and their bond gets slashed. There is
+    no downside to trying cheap first — the protocol absorbs the risk.
+  - If quittance_pay returns skipped=true (seller opened escrow but did not deliver),
+    call quittance_pay again with the next best seller. Do not give up after one failure.
+  - Call check_buyer_wallet only if you need to verify allowance.
+  - Report final settlement: quittanceTx (on-chain proof), escrowTx, deliverable.
 
-Emit your reasoning before each decision. Be specific: name which seller you chose and why. \
-Two sentences max per reasoning trace.`;
+Emit your reasoning before each tool call. Be specific: name the seller and why you chose it. \
+One or two sentences max.`;
 
 // ─── OpenAI tool schemas ──────────────────────────────────────────────────────
 
@@ -282,6 +281,53 @@ async function toolCheckBuyerWallet(
   };
 }
 
+/**
+ * Wait until after the escrow deadline then call Escrow.refund(paymentId).
+ * Fires in the background — buyer agent does not wait for it.
+ */
+async function scheduleRefund(
+  paymentId: string,
+  deadlineUnix: number,
+  buyerEOA: ReturnType<typeof getSigner>,
+  sdk: ReturnType<typeof makeSDK>,
+) {
+  const provider = getProvider();
+  const msUntilDeadline = Math.max(0, (deadlineUnix - Math.floor(Date.now() / 1000)) * 1000);
+  const waitMs = msUntilDeadline + 20_000; // 20s buffer — block.timestamp lags wall clock
+  await emit({ kind: "reasoning", content: `Refund scheduled in ${Math.ceil(waitMs / 1000)}s — escrow deadline at ${new Date(deadlineUnix * 1000).toISOString()}` });
+
+  setTimeout(async () => {
+    try {
+      await emit({ kind: "action", actionId: `refund-${paymentId.slice(2, 10)}`, actionLabel: `Escrow.refund(${paymentId.slice(0, 14)}…) — reclaiming USDC + slashing bond`, actionStatus: "pending" });
+      const refundCD = encodeCall("function refund(bytes32 paymentId)", [paymentId]);
+      const result = await aaSend(sdk, buyerEOA, process.env.ESCROW_ADDRESS!, refundCD);
+      await emit({
+        kind: "action",
+        actionId: `refund-${paymentId.slice(2, 10)}`,
+        actionLabel: `Refund + slash confirmed — USDC returned to buyer AA, bond slashed`,
+        actionStatus: "confirmed",
+        txHash: result.txHash,
+        blockNumber: result.blockNumber,
+      });
+      await emit({
+        kind: "quittance",
+        receipt: {
+          paymentId,
+          seller: "email-cheap.kite",
+          adapter: "ORACLE",
+          amount: "0.001",
+          status: "SLASHED",
+          txHash: result.txHash,
+          blockNumber: result.blockNumber,
+        },
+      });
+    } catch (err: unknown) {
+      const e = err as { message?: string };
+      await emit({ kind: "reasoning", content: `Refund tx failed: ${e.message ?? String(err)}` });
+    }
+  }, waitMs);
+}
+
 async function toolQuittancePay(
   args: {
     sellerName: string;
@@ -290,8 +336,10 @@ async function toolQuittancePay(
     body?:      string;
     prompt?:    string;
   },
-  sellers:  Record<string, SellerConfig>,
-  buyerAA:  string,
+  sellers:   Record<string, SellerConfig>,
+  buyerAA:   string,
+  buyerEOA:  ReturnType<typeof getSigner>,
+  sdk:       ReturnType<typeof makeSDK>,
 ) {
   const cfg = sellers[args.sellerName];
   if (!cfg) {
@@ -395,24 +443,30 @@ async function toolQuittancePay(
     xPaymentResponse = r2.headers.get("x-payment-response");
 
     if (r2.status === 202) {
-      // Cheap seller acknowledged but skipped delivery — escrow is open, deadline will trigger refund
-      const body = await r2.json() as { paymentId: string; escrowTx?: string; note?: string };
+      const body = await r2.json() as { paymentId: string; escrowTx?: string; note?: string; deadline?: number };
       await emit({
-        kind: "action",
-        actionId: "x402-r2",
-        actionLabel: `202 Accepted — cheap seller skipped delivery (refund + slash at deadline)`,
+        kind:        "action",
+        actionId:    "x402-r2",
+        actionLabel: `202 Accepted — cheap seller opened escrow but skipped delivery`,
         actionStatus: "failed",
       });
       await emit({
         kind:    "reasoning",
-        content: `Cheap seller opened escrow but did not deliver. Escrow deadline will trigger automatic refund and bond slash.`,
+        content: `Cheap seller took the escrow but didn't deliver. Refund + bond slash scheduled automatically after deadline. Routing to the reliable seller next.`,
       });
+
+      // Schedule on-chain refund after deadline — fires in background, doesn't block agent
+      if (body.paymentId) {
+        const deadline = body.deadline ?? (Math.floor(Date.now() / 1000) + 65);
+        scheduleRefund(body.paymentId, deadline, buyerEOA, sdk).catch(() => {});
+      }
+
       return {
-        success:    false,
-        skipped:    true,
-        paymentId:  body.paymentId,
-        escrowTx:   body.escrowTx,
-        note:       body.note ?? "Refund + slash will fire at deadline",
+        success:   false,
+        skipped:   true,
+        paymentId: body.paymentId,
+        escrowTx:  body.escrowTx,
+        note:      "Cheap seller failed. Refund + slash scheduled. Try the next seller.",
       };
     }
 
@@ -546,6 +600,8 @@ async function run(task: string) {
               args as Parameters<typeof toolQuittancePay>[0],
               sellers,
               buyerAA,
+              buyerEOA,
+              sdk,
             );
             break;
           default:
