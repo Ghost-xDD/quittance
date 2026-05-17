@@ -1,0 +1,14 @@
+# railway-image-seller.toml — Quittance Image Seller
+#
+# In Railway dashboard → service Settings → Config File Path:
+#   quittance-agents/railway-image-seller.toml
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm run seller-image"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
