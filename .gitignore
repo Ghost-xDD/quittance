@@ -18,3 +18,4 @@ quittance-agents/node_modules/
 # Env files with secrets
 quittance-web/.env.local
 quittance-agents/.env
+CHECKPOINT.md

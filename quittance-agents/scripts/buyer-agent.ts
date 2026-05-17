@@ -47,6 +47,7 @@ interface SellerConfig {
   url: string;
   service: string;
   proofType: string;
+  priceUSDC: string;   // price per call in USDC, e.g. "0.001"
 }
 
 function buildSellerRegistry(): Record<string, SellerConfig> {
@@ -57,6 +58,7 @@ function buildSellerRegistry(): Record<string, SellerConfig> {
       url: process.env.SELLER_URL ?? "http://localhost:4001/task",
       service: "SMS delivery",
       proofType: "ORACLE",
+      priceUSDC: "0.001",
     };
   }
   if (process.env.SELLER_SMS_CHEAP_PRIVATE_KEY) {
@@ -65,6 +67,7 @@ function buildSellerRegistry(): Record<string, SellerConfig> {
       url: process.env.SELLER_CHEAP_URL ?? "http://localhost:4002/task",
       service: "SMS delivery (budget)",
       proofType: "ORACLE",
+      priceUSDC: "0.001",
     };
   }
   return reg;
@@ -87,16 +90,16 @@ PROTOCOL OVERVIEW
 
 YOUR JOB
   - Call list_sellers to see available sellers and their on-chain reputation.
-  - Choose the best seller for the task. Consider: bond size (must exceed 
-    the payment so risk is bounded), success rate, and seller tier 
-    (Bronze < Silver < Gold).
-  - Call send_sms_via_x402 to execute the payment. This handles everything: 
-    escrow approval, x402 payment headers, and quittance verification.
-  - Report the result to the user, including the on-chain transaction hash.
+    Each seller has a priceUSDC (the cost per call, e.g. 0.001 USDC) and a
+    bondPYUSD (the seller's posted collateral — unrelated to what you pay).
+    A higher bond means more skin-in-the-game for the seller, not a higher price.
+  - Call check_buyer_wallet to see your USDC balance. You only need enough to
+    cover the priceUSDC (e.g. 0.001 USDC), not the bond.
+  - Choose the best seller. Prefer higher bonds, success rates, and Gold/Silver tier.
+  - Call send_sms_via_x402 to execute the payment and delivery.
+  - Report the result to the user, including on-chain quittance tx hash.
 
-Be concise. Show your reasoning about seller selection briefly — one or two 
-sentences. Prefer sellers with higher bonds and success rates. If the only 
-available seller has poor stats, note the risk explicitly.`;
+Be concise. One or two sentences of reasoning on seller selection is enough.`;
 
 // ─── OpenAI tool schemas ──────────────────────────────────────────────────────
 
@@ -179,6 +182,7 @@ async function toolListSellers(
       proofType: cfg.proofType,
       passport:  sellerAA,
       url:       cfg.url,
+      priceUSDC: cfg.priceUSDC,
       ...repData,
     });
   }
@@ -211,111 +215,142 @@ async function toolSendSmsViaX402(
 
   const c = getContracts(provider);
 
-  // ── 1. kpass agent:session execute (full x402 via Passport) ──────────────
+  // ── Round 1: request task → seller returns paymentId + sellerAA + amount ──
   await emit({
     kind: "reasoning",
-    content: `Initiating x402 payment via Kite Passport session…\n  Seller: ${cfg.url}\n  Amount: 0.001 USDC (session-signed, Kite mainnet)`,
+    content: `Round 1 — requesting task from seller…\n  Seller: ${cfg.url}\n  Buyer passport: ${buyerAA}`,
   });
 
-  const body = JSON.stringify({ to: args.to, message: args.message });
+  await emit({ kind: "action", actionId: "r1-request", actionLabel: `POST ${cfg.url} → request task`, actionStatus: "pending" });
 
-  // Use session token from env (injected by /api/run-task when UI passes it)
-  const sessionId = process.env.KPASS_SESSION_ID ?? "";
-  const sessionFlag = sessionId ? `--session-id ${sessionId}` : "";
+  let round1: { paymentId: string; sellerAA: string; amountUSDC: string; deadline: number };
+  try {
+    const r1 = await fetch(cfg.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: args.to, message: args.message, buyerAA }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!r1.ok) {
+      const txt = await r1.text().catch(() => "");
+      return { success: false, error: `Seller Round 1 failed (${r1.status}): ${txt.slice(0, 200)}` };
+    }
+    round1 = await r1.json() as typeof round1;
+  } catch (e: unknown) {
+    const err = e as { message?: string };
+    return { success: false, error: `Seller unreachable: ${err.message}` };
+  }
+
+  await emit({ kind: "action", actionId: "r1-request", actionLabel: `POST ${cfg.url} → paymentId received`, actionStatus: "confirmed" });
+  await emit({
+    kind: "reasoning",
+    content: `Task accepted by seller ✓\n  paymentId: ${round1.paymentId.slice(0, 18)}…\n  Amount: ${round1.amountUSDC} USDC → ${round1.sellerAA.slice(0, 10)}…`,
+  });
+
+  // ── Pay: kpass wallet send → real USDC on Kite mainnet ───────────────────
+  await emit({
+    kind: "reasoning",
+    content: `Paying ${round1.amountUSDC} USDC to seller via Kite Passport wallet…`,
+  });
+
+  await emit({ kind: "action", actionId: "kpass-pay", actionLabel: `kpass wallet send → ${round1.amountUSDC} USDC`, actionStatus: "pending" });
 
   const kpassCmd = [
-    "kpass agent:session execute",
-    `--url ${cfg.url}`,
-    `--method POST`,
-    `--body ${JSON.stringify(body)}`,
-    sessionFlag,
+    "kpass wallet send",
+    `--to ${round1.sellerAA}`,
+    `--amount ${round1.amountUSDC}`,
+    "--asset USDC",
     "--output json",
-  ].filter(Boolean).join(" ");
+  ].join(" ");
 
-  await emit({ kind: "action", actionId: "kpass-x402", actionLabel: `kpass execute → ${cfg.url}`, actionStatus: "pending" });
-
-  let kpassOut: string;
+  let payTxHash: string;
   try {
     const { stdout } = await execAsync(kpassCmd, { timeout: 60_000 });
-    kpassOut = stdout;
+    const parsed = JSON.parse(stdout) as { status: string; transaction_hash?: string; error?: string };
+    if (parsed.status !== "success" || parsed.error) {
+      return { success: false, error: `kpass wallet send failed: ${parsed.error ?? parsed.status}` };
+    }
+    payTxHash = parsed.transaction_hash ?? "";
   } catch (e: unknown) {
     const err = e as { stderr?: string; message?: string };
-    return { success: false, error: `kpass execute failed: ${err.stderr ?? err.message}` };
+    return { success: false, error: `kpass wallet send error: ${err.stderr ?? err.message}` };
   }
-
-  interface KpassExecuteResult {
-    status: string;
-    response_body?: string;
-    transaction_hash?: string;
-    error?: string;
-  }
-
-  let kpassResult: KpassExecuteResult;
-  try {
-    kpassResult = JSON.parse(kpassOut) as KpassExecuteResult;
-  } catch {
-    return { success: false, error: `kpass returned invalid JSON: ${kpassOut.slice(0, 200)}` };
-  }
-
-  if (kpassResult.status !== "success" || kpassResult.error) {
-    await emit({ kind: "action", actionId: "kpass-x402", actionLabel: `kpass execute → ${cfg.url}`, actionStatus: "failed" });
-    return { success: false, error: kpassResult.error ?? `kpass status: ${kpassResult.status}` };
-  }
-
-  // Parse the settlement returned by the seller in the response body
-  let settlement: { paymentId?: string; quittanceTx?: string; blockNumber?: number; result?: string } = {};
-  try {
-    settlement = JSON.parse(kpassResult.response_body ?? "{}") as typeof settlement;
-  } catch { /**/ }
-
-  const paymentId = settlement.paymentId ?? kpassResult.transaction_hash ?? "pending";
 
   await emit({
     kind: "action",
-    actionId: "kpass-x402",
-    actionLabel: `kpass execute → ${cfg.url}`,
+    actionId: "kpass-pay",
+    actionLabel: `kpass wallet send → ${round1.amountUSDC} USDC`,
     actionStatus: "confirmed",
-    txHash: kpassResult.transaction_hash,
+    txHash: payTxHash,
   });
-
   await emit({
     kind: "reasoning",
-    content: `Kite Passport signed x402 payment ✓\n  USDC sent from Passport wallet → seller on Kite mainnet\n  kpass tx: ${kpassResult.transaction_hash ?? "confirmed"}`,
+    content: `USDC payment confirmed on Kite mainnet ✓\n  tx: ${payTxHash}\n  ${round1.amountUSDC} USDC → seller passport`,
   });
 
-  // ── 2. Verify quittance on-chain ──────────────────────────────────────────
-  if (settlement.quittanceTx && paymentId !== "pending") {
-    await emit({ kind: "reasoning", content: `Verifying quittance on-chain for paymentId ${paymentId.slice(0, 18)}…` });
-    try {
-      const [, , , , isSettled] = (await c.escrow.getEscrowRecord(paymentId)) as [string, string, bigint, bigint, boolean, boolean];
-      if (!isSettled) {
-        await emit({ kind: "reasoning", content: `⚠ Escrow not yet settled on-chain — quittance may still be propagating.` });
-      }
-    } catch { /* not critical — seller already confirmed */ }
+  // ── Round 2: prove payment → seller delivers + posts quittance ────────────
+  await emit({ kind: "action", actionId: "r2-prove", actionLabel: `POST ${cfg.url} → prove + settle`, actionStatus: "pending" });
+
+  let settlement: { paymentId: string; quittanceTx: string; blockNumber: number; result: string; usdcAmount: string };
+  try {
+    const r2 = await fetch(cfg.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to:        args.to,
+        message:   args.message,
+        buyerAA,
+        paymentId: round1.paymentId,
+        txHash:    payTxHash,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!r2.ok) {
+      const txt = await r2.text().catch(() => "");
+      return { success: false, error: `Seller Round 2 failed (${r2.status}): ${txt.slice(0, 200)}` };
+    }
+    settlement = await r2.json() as typeof settlement;
+  } catch (e: unknown) {
+    const err = e as { message?: string };
+    return { success: false, error: `Seller Round 2 error: ${err.message}` };
   }
 
-  // ── 3. Emit quittance receipt ─────────────────────────────────────────────
+  await emit({ kind: "action", actionId: "r2-prove", actionLabel: `Quittance posted → block ${settlement.blockNumber}`, actionStatus: "confirmed", txHash: settlement.quittanceTx });
+
+  // ── Verify escrow settled on-chain ────────────────────────────────────────
+  await emit({ kind: "reasoning", content: `Verifying escrow settlement on-chain…  paymentId: ${settlement.paymentId.slice(0, 18)}…` });
+  try {
+    const [, , , , isSettled] = (await c.escrow.getEscrowRecord(settlement.paymentId)) as [string, string, bigint, bigint, boolean, boolean];
+    await emit({
+      kind: "reasoning",
+      content: isSettled
+        ? `Escrow settled on-chain ✓  Seller received ${settlement.usdcAmount} USDC`
+        : `⚠ Escrow record not yet finalised — quittance propagating.`,
+    });
+  } catch { /* non-fatal */ }
+
+  // ── Emit quittance receipt ────────────────────────────────────────────────
   await emit({
     kind: "quittance",
     receipt: {
-      paymentId,
+      paymentId:   settlement.paymentId,
       seller:      args.sellerName,
       adapter:     cfg.proofType,
-      amount:      "0.001",
+      amount:      settlement.usdcAmount,
       status:      "SETTLED",
-      txHash:      settlement.quittanceTx ?? kpassResult.transaction_hash,
+      txHash:      settlement.quittanceTx,
       blockNumber: settlement.blockNumber,
     },
   });
 
   return {
     success:     true,
-    result:      settlement.result ?? "SMS delivered",
-    paymentId,
+    result:      settlement.result,
+    paymentId:   settlement.paymentId,
     quittanceTx: settlement.quittanceTx,
     blockNumber: settlement.blockNumber,
-    passportTx:  kpassResult.transaction_hash,
-    note:        "Paid via Kite Passport x402 session. Escrow + quittance settled on Kite mainnet.",
+    paymentTx:   payTxHash,
+    note:        "Paid via Kite Passport wallet. Quittance proof posted on Kite mainnet. Swap to kpass execute once seller URL is allowlisted.",
   };
 }
 
