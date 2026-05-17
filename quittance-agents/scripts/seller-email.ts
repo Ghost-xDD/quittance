@@ -380,11 +380,9 @@ async function main() {
       return;
     }
 
-    // v0: require sessionToken present (full JWT verification in v0.1)
-    if (!xp.sessionToken) {
-      jsonRes(res, 401, { error: "X-PAYMENT missing sessionToken" });
-      return;
-    }
+    // v0: authorization = buyer AA's on-chain escrow allowance (checked below).
+    // sessionToken is optional metadata. Full JWT verification against kpass
+    // endpoint is a v0.1 upgrade (implementation.md §5.3.5).
 
     const p = pending.get(paymentId);
     if (!p) {

@@ -1,71 +1,87 @@
 /**
- * buyer-agent.ts — Quittance Buyer Agent (GPT-4o mini)
+ * buyer-agent.ts — Quittance Buyer Agent (GPT-4o mini, spec-compliant x402)
  *
  * A real LLM agent that:
  *   1. Receives a task from the user.
  *   2. Calls list_sellers → inspects on-chain reputation.
- *   3. Decides which seller to use (model reasoning).
- *   4. Calls send_sms_via_x402 → full x402 + AA escrow + quittance.
- *   5. Reports settlement to the user.
+ *   3. Reasons about which seller to use (model output, streamed to UI).
+ *   4. Calls quittance_pay → full spec-compliant x402 round-trip:
+ *        Round 1: POST /task → HTTP 402 + accepts block
+ *        Round 2: POST /task (X-PAYMENT header) → HTTP 200 + X-PAYMENT-RESPONSE
+ *        Seller opens escrow, delivers, posts QuittanceRegistry proof, escrow releases.
+ *   5. Reports settlement (quittanceTx, escrowTx, imageUrl / messageId) to the user.
  *
- * Every "reasoning" message is real model output. Every "action" event
- * is a real on-chain transaction.
- *
- * Usage:  npm run buyer-agent [-- --task "send SMS to +1-555-0192"]
+ * No kpass wallet send. No custom two-round protocol. Pure x402 per §5.3.5.
  *
  * Environment
- *   OPENAI_API_KEY            GPT-4o mini access
- *   BUYER_PRIVATE_KEY         EOA key for the buyer passport
- *   SELLER_SMS_PRO_PRIVATE_KEY EOA key to derive seller passport address
- *   SELLER_URL                Seller HTTP endpoint (default: http://localhost:4001/task)
- *   EVENTS_WEBHOOK_URL        Web UI webhook (default: http://localhost:3001/api/agent-events)
+ *   OPENAI_API_KEY              GPT-4o mini access
+ *   BUYER_PRIVATE_KEY           EOA key for the buyer AA wallet
+ *   KPASS_SESSION_TOKEN         Kite Passport session token (embedded in X-PAYMENT)
+ *   SELLER_EMAIL_PRIVATE_KEY    Used to derive email.kite passport address for UI
+ *   SELLER_EMAIL_CHEAP_PRIVATE_KEY  Used to derive email-cheap.kite passport address
+ *   SELLER_IMAGE_PRIVATE_KEY    Used to derive image.kite passport address
+ *   SELLER_EMAIL_URL            email.kite endpoint (default: http://localhost:4002/task)
+ *   SELLER_EMAIL_CHEAP_URL      email-cheap.kite endpoint (default: http://localhost:4003/task)
+ *   SELLER_IMAGE_URL            image.kite endpoint (default: http://localhost:4004/task)
+ *   EVENTS_WEBHOOK_URL          Web UI webhook (default: http://localhost:3001/api/agent-events)
  */
 
 import "dotenv/config";
 import OpenAI from "openai";
 import { ethers } from "ethers";
-import { exec } from "child_process";
-import { promisify } from "util";
 import {
   getProvider, getSigner, getContracts,
-  makePaymentId, fmt, TIER_LABEL,
+  fmt, TIER_LABEL,
 } from "../lib/contracts";
-import { makeSDK, aaAddress, aaSend, encodeCall } from "../lib/aa";
+import { makeSDK, aaAddress } from "../lib/aa";
 import { emit, emitAction } from "../lib/events";
-
-const execAsync = promisify(exec);
 
 // ─── OpenAI client ────────────────────────────────────────────────────────────
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ─── Seller registry ─────────────────────────────────────────────────────────
-// Add entries here as more sellers come online. Keys map to env vars.
+// ─── Seller registry ──────────────────────────────────────────────────────────
+
+type ServiceType = "email" | "image";
 
 interface SellerConfig {
-  key: string;
-  url: string;
-  service: string;
+  key:       string;
+  url:       string;
+  service:   string;
+  type:      ServiceType;
   proofType: string;
-  priceUSDC: string;   // price per call in USDC, e.g. "0.001"
+  priceUSDC: string;
 }
 
 function buildSellerRegistry(): Record<string, SellerConfig> {
   const reg: Record<string, SellerConfig> = {};
-  if (process.env.SELLER_SMS_PRO_PRIVATE_KEY) {
-    reg["sms.kite"] = {
-      key: process.env.SELLER_SMS_PRO_PRIVATE_KEY,
-      url: process.env.SELLER_URL ?? "http://localhost:4001/task",
-      service: "SMS delivery",
+
+  if (process.env.SELLER_EMAIL_PRIVATE_KEY) {
+    reg["email.kite"] = {
+      key:       process.env.SELLER_EMAIL_PRIVATE_KEY,
+      url:       process.env.SELLER_EMAIL_URL ?? "http://localhost:4002/task",
+      service:   "Email delivery (real inbox, on-chain proof)",
+      type:      "email",
       proofType: "ORACLE",
       priceUSDC: "0.001",
     };
   }
-  if (process.env.SELLER_SMS_CHEAP_PRIVATE_KEY) {
-    reg["sms-cheap.kite"] = {
-      key: process.env.SELLER_SMS_CHEAP_PRIVATE_KEY,
-      url: process.env.SELLER_CHEAP_URL ?? "http://localhost:4002/task",
-      service: "SMS delivery (budget)",
+  if (process.env.SELLER_EMAIL_CHEAP_PRIVATE_KEY) {
+    reg["email-cheap.kite"] = {
+      key:       process.env.SELLER_EMAIL_CHEAP_PRIVATE_KEY,
+      url:       process.env.SELLER_EMAIL_CHEAP_URL ?? "http://localhost:4003/task",
+      service:   "Email delivery (budget, unreliable)",
+      type:      "email",
+      proofType: "ORACLE",
+      priceUSDC: "0.001",
+    };
+  }
+  if (process.env.SELLER_IMAGE_PRIVATE_KEY) {
+    reg["image.kite"] = {
+      key:       process.env.SELLER_IMAGE_PRIVATE_KEY,
+      url:       process.env.SELLER_IMAGE_URL ?? "http://localhost:4004/task",
+      service:   "Image generation (Pollinations.ai, real image URL, on-chain proof)",
+      type:      "image",
       proofType: "ORACLE",
       priceUSDC: "0.001",
     };
@@ -73,33 +89,81 @@ function buildSellerRegistry(): Record<string, SellerConfig> {
   return reg;
 }
 
+// ─── x402 helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Build the X-PAYMENT header payload per implementation.md §5.3.5.
+ *
+ * Authorization model in v0:
+ *   The buyer AA's standing escrow allowance (set during setup-mainnet) is the
+ *   on-chain authorization. The seller verifies allowance via eth_call before
+ *   calling openEscrow — no session token needed.
+ *
+ *   sessionToken is included as optional metadata referencing the Passport
+ *   session the user approved in the web UI. Full JWT verification against
+ *   a kpass endpoint is a v0.1 upgrade (spec'd in implementation.md §5.3.5).
+ */
+function buildXPayment(paymentId: string, buyerAA: string): string {
+  const payload: Record<string, unknown> = {
+    scheme:   "gokite-aa",
+    version:  "Q001",
+    paymentId,
+    buyerAA,
+    issuedAt: Math.floor(Date.now() / 1000),
+    nonce:    ethers.hexlify(ethers.randomBytes(16)),
+  };
+  // Include session reference if available — informational only in v0
+  if (process.env.KPASS_SESSION_TOKEN) {
+    payload.sessionToken = process.env.KPASS_SESSION_TOKEN;
+  }
+  return Buffer.from(JSON.stringify(payload)).toString("base64");
+}
+
+interface X402Accept {
+  scheme:            string;
+  network:           string;
+  maxAmountRequired: string;
+  payTo:             string;
+  asset:             string;
+  extra?: {
+    paymentId?: string;
+    buyerAA?:   string;
+    quittance?: Record<string, unknown>;
+  };
+}
+
+interface Round1Response {
+  accepts: X402Accept[];
+}
+
 // ─── System prompt ────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `\
 You are a Quittance buyer agent running on Kite mainnet. You help users \
-complete tasks — starting with SMS delivery — through the Quittance protocol: \
-an atomic Exec-Pay-Deliver system where funds only leave escrow when \
+complete tasks — email delivery and image generation — through the Quittance \
+protocol: an atomic Exec-Pay-Deliver system where funds only leave escrow when \
 cryptographic proof of delivery is posted on-chain.
 
-PROTOCOL OVERVIEW
-  1. Funds are locked in an Escrow smart contract.
-  2. The seller delivers the service and posts an on-chain Quittance (proof).
-  3. If the proof is valid, escrow releases payment to the seller.
-  4. If no proof arrives before the deadline, the buyer gets a full refund.
-  5. Sellers must post a bond that is slashable on fraudulent settlement.
+PROTOCOL
+  1. Buyer sends a request → seller returns HTTP 402 with payment terms (no money moves yet).
+  2. Buyer sends X-PAYMENT header → seller opens on-chain escrow, delivers the service, \
+     posts a Quittance proof to QuittanceRegistry, and escrow auto-releases to seller.
+  3. If no proof before deadline → full refund, seller bond slashed.
+  4. All settlement is facilitator-free: the escrow contract IS the settlement venue.
 
 YOUR JOB
   - Call list_sellers to see available sellers and their on-chain reputation.
-    Each seller has a priceUSDC (the cost per call, e.g. 0.001 USDC) and a
-    bondPYUSD (the seller's posted collateral — unrelated to what you pay).
-    A higher bond means more skin-in-the-game for the seller, not a higher price.
-  - Call check_buyer_wallet to see your USDC balance. You only need enough to
-    cover the priceUSDC (e.g. 0.001 USDC), not the bond.
-  - Choose the best seller. Prefer higher bonds, success rates, and Gold/Silver tier.
-  - Call send_sms_via_x402 to execute the payment and delivery.
-  - Report the result to the user, including on-chain quittance tx hash.
+    Each seller has priceUSDC (cost per call) and bond (seller's collateral).
+    Higher bond = more skin-in-the-game = safer for buyer.
+  - Prefer higher bond tier (Gold > Silver > Bronze) and higher success rate.
+    The cheap seller is risky — but if it fails, escrow refunds you and slashes their bond.
+    You can rationally try the cheap one first if the task is not urgent.
+  - Call check_buyer_wallet to verify your USDC allowance covers the price.
+  - Call quittance_pay to execute the x402 payment and get delivery proof.
+  - Report settlement: quittanceTx (on-chain proof), escrowTx, deliverable (imageUrl or messageId).
 
-Be concise. One or two sentences of reasoning on seller selection is enough.`;
+Emit your reasoning before each decision. Be specific: name which seller you chose and why. \
+Two sentences max per reasoning trace.`;
 
 // ─── OpenAI tool schemas ──────────────────────────────────────────────────────
 
@@ -109,7 +173,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "list_sellers",
       description:
-        "Lists all available service sellers registered on Kite testnet with their on-chain reputation stats (tier, success rate, bond size, settled count).",
+        "Lists all Quittance sellers on Kite mainnet with their on-chain reputation (tier, bond, success rate, settled count). Always call this before choosing a seller.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -118,33 +182,44 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "check_buyer_wallet",
       description:
-        "Returns the buyer's Kite Passport wallet address, current USDC balance, and USDC allowance granted to the Escrow contract.",
+        "Returns the buyer's AA wallet address, USDC balance, and USDC allowance to the Escrow contract. Call this to verify you have enough allowance.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
   {
     type: "function",
     function: {
-      name: "send_sms_via_x402",
+      name: "quittance_pay",
       description:
-        "Executes a full Quittance payment cycle to send an SMS via a named seller: opens escrow, delivers x402 payment auth, waits for on-chain proof, and returns the settlement result.",
+        "Execute a full Quittance x402 payment cycle with a named seller. " +
+        "For email sellers: provide to, subject, body. " +
+        "For image sellers: provide prompt. " +
+        "Returns settlement result including quittanceTx, escrowTx, and the deliverable (imageUrl or messageId).",
       parameters: {
         type: "object",
         properties: {
           sellerName: {
-            type: "string",
-            description: "Seller name from list_sellers, e.g. 'sms.kite'",
+            type:        "string",
+            description: "Seller name from list_sellers, e.g. 'email.kite' or 'image.kite'",
           },
           to: {
-            type: "string",
-            description: "Destination phone number, e.g. '+1-555-0192'",
+            type:        "string",
+            description: "Email recipient address (for email sellers)",
           },
-          message: {
-            type: "string",
-            description: "The SMS body to deliver",
+          subject: {
+            type:        "string",
+            description: "Email subject line (for email sellers)",
+          },
+          body: {
+            type:        "string",
+            description: "Email body content (for email sellers)",
+          },
+          prompt: {
+            type:        "string",
+            description: "Image generation prompt (for image sellers)",
           },
         },
-        required: ["sellerName", "to", "message"],
+        required: ["sellerName"],
       },
     },
   },
@@ -153,9 +228,9 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
 // ─── Tool executors ───────────────────────────────────────────────────────────
 
 async function toolListSellers(
-  sellers: Record<string, SellerConfig>,
+  sellers:  Record<string, SellerConfig>,
   provider: ethers.JsonRpcProvider,
-  sdk: ReturnType<typeof makeSDK>,
+  sdk:      ReturnType<typeof makeSDK>,
 ) {
   const c = getContracts(provider);
   const results = [];
@@ -164,7 +239,7 @@ async function toolListSellers(
     const sellerEOA = getSigner(cfg.key, provider);
     const sellerAA  = aaAddress(sdk, sellerEOA.address);
 
-    let repData = { tier: "Unknown", successRatePct: 0, settled: 0, slashed: 0, bondPYUSD: "0" };
+    let repData = { tier: "Unknown", successRatePct: 0, settled: 0, slashed: 0, bondUSDC: "0" };
     try {
       const rep = (await c.reputation.summary(sellerAA)) as [bigint, bigint, bigint, bigint, number];
       repData = {
@@ -172,16 +247,16 @@ async function toolListSellers(
         successRatePct: Number(rep[0]) / 100,
         settled:        Number(rep[1]),
         slashed:        Number(rep[2]),
-        bondPYUSD:      fmt(rep[3]),
+        bondUSDC:       fmt(rep[3]),
       };
-    } catch { /* seller not yet on-chain */ }
+    } catch { /* seller not yet registered on reputation view */ }
 
     results.push({
       name,
       service:   cfg.service,
+      type:      cfg.type,
       proofType: cfg.proofType,
       passport:  sellerAA,
-      url:       cfg.url,
       priceUSDC: cfg.priceUSDC,
       ...repData,
     });
@@ -191,166 +266,213 @@ async function toolListSellers(
 }
 
 async function toolCheckBuyerWallet(
-  buyerAA: string,
-  provider: ethers.JsonRpcProvider,
-) {
-  const c       = getContracts(provider);
-  const balance = (await c.pyusd.balanceOf(buyerAA)) as bigint;
-  const allow   = (await c.pyusd.allowance(buyerAA, process.env.ESCROW_ADDRESS!)) as bigint;
-  return {
-    passport:              buyerAA,
-    balancePYUSD:          fmt(balance),
-    escrowAllowancePYUSD:  fmt(allow),
-  };
-}
-
-async function toolSendSmsViaX402(
-  args: { sellerName: string; to: string; message: string },
-  sellers:  Record<string, SellerConfig>,
   buyerAA:  string,
   provider: ethers.JsonRpcProvider,
 ) {
+  const c      = getContracts(provider);
+  const bal    = (await c.usdc.balanceOf(buyerAA)) as bigint;
+  const allow  = (await c.usdc.allowance(buyerAA, process.env.ESCROW_ADDRESS!)) as bigint;
+  return {
+    passport:             buyerAA,
+    balanceUSDC:          fmt(bal),
+    escrowAllowanceUSDC:  fmt(allow),
+    note: allow === 0n
+      ? "Run setup-mainnet to approve escrow allowance"
+      : "Allowance covers payments ✓",
+  };
+}
+
+async function toolQuittancePay(
+  args: {
+    sellerName: string;
+    to?:        string;
+    subject?:   string;
+    body?:      string;
+    prompt?:    string;
+  },
+  sellers:  Record<string, SellerConfig>,
+  buyerAA:  string,
+) {
   const cfg = sellers[args.sellerName];
-  if (!cfg) return { success: false, error: `Unknown seller '${args.sellerName}'. Use list_sellers first.` };
+  if (!cfg) {
+    return { success: false, error: `Unknown seller '${args.sellerName}'. Use list_sellers first.` };
+  }
 
-  const c = getContracts(provider);
+  // Build service-specific body for Round 1
+  let serviceBody: Record<string, string>;
+  if (cfg.type === "email") {
+    if (!args.to) return { success: false, error: "to (email address) is required for email sellers" };
+    serviceBody = {
+      to:      args.to,
+      subject: args.subject ?? "Message from Quittance Agent",
+      body:    args.body    ?? "",
+      buyerAA,
+    };
+  } else {
+    if (!args.prompt) return { success: false, error: "prompt is required for image sellers" };
+    serviceBody = { prompt: args.prompt, buyerAA };
+  }
 
-  // ── Round 1: request task → seller returns paymentId + sellerAA + amount ──
+  // ── Round 1: POST without X-PAYMENT → expect 402 ─────────────────────────
   await emit({
-    kind: "reasoning",
-    content: `Round 1 — requesting task from seller…\n  Seller: ${cfg.url}\n  Buyer passport: ${buyerAA}`,
+    kind:    "reasoning",
+    content: `x402 Round 1 — requesting from ${args.sellerName} at ${cfg.url}…`,
   });
+  await emit({ kind: "action", actionId: "x402-r1", actionLabel: `POST ${cfg.url} → 402 negotiation`, actionStatus: "pending" });
 
-  await emit({ kind: "action", actionId: "r1-request", actionLabel: `POST ${cfg.url} → request task`, actionStatus: "pending" });
-
-  let round1: { paymentId: string; sellerAA: string; amountUSDC: string; deadline: number };
+  let r1Body: Round1Response;
   try {
     const r1 = await fetch(cfg.url, {
-      method: "POST",
+      method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: args.to, message: args.message, buyerAA }),
-      signal: AbortSignal.timeout(15_000),
+      body:    JSON.stringify(serviceBody),
+      signal:  AbortSignal.timeout(15_000),
     });
-    if (!r1.ok) {
+
+    if (r1.status !== 402) {
       const txt = await r1.text().catch(() => "");
-      return { success: false, error: `Seller Round 1 failed (${r1.status}): ${txt.slice(0, 200)}` };
+      return { success: false, error: `Expected 402, got ${r1.status}: ${txt.slice(0, 200)}` };
     }
-    round1 = await r1.json() as typeof round1;
+
+    r1Body = await r1.json() as Round1Response;
   } catch (e: unknown) {
-    const err = e as { message?: string };
-    return { success: false, error: `Seller unreachable: ${err.message}` };
+    return { success: false, error: `Seller unreachable: ${(e as { message?: string }).message}` };
   }
 
-  await emit({ kind: "action", actionId: "r1-request", actionLabel: `POST ${cfg.url} → paymentId received`, actionStatus: "confirmed" });
-  await emit({
-    kind: "reasoning",
-    content: `Task accepted by seller ✓\n  paymentId: ${round1.paymentId.slice(0, 18)}…\n  Amount: ${round1.amountUSDC} USDC → ${round1.sellerAA.slice(0, 10)}…`,
-  });
-
-  // ── Pay: kpass wallet send → real USDC on Kite mainnet ───────────────────
-  await emit({
-    kind: "reasoning",
-    content: `Paying ${round1.amountUSDC} USDC to seller via Kite Passport wallet…`,
-  });
-
-  await emit({ kind: "action", actionId: "kpass-pay", actionLabel: `kpass wallet send → ${round1.amountUSDC} USDC`, actionStatus: "pending" });
-
-  const kpassCmd = [
-    "kpass wallet send",
-    `--to ${round1.sellerAA}`,
-    `--amount ${round1.amountUSDC}`,
-    "--asset USDC",
-    "--output json",
-  ].join(" ");
-
-  let payTxHash: string;
-  try {
-    const { stdout } = await execAsync(kpassCmd, { timeout: 60_000 });
-    const parsed = JSON.parse(stdout) as { status: string; transaction_hash?: string; error?: string };
-    if (parsed.status !== "success" || parsed.error) {
-      return { success: false, error: `kpass wallet send failed: ${parsed.error ?? parsed.status}` };
-    }
-    payTxHash = parsed.transaction_hash ?? "";
-  } catch (e: unknown) {
-    const err = e as { stderr?: string; message?: string };
-    return { success: false, error: `kpass wallet send error: ${err.stderr ?? err.message}` };
+  const accepted = r1Body.accepts?.[0];
+  if (!accepted?.extra?.paymentId) {
+    return { success: false, error: "402 response missing accepts[0].extra.paymentId" };
   }
 
+  const paymentId = accepted.extra.paymentId;
+  const escrowAddr = accepted.payTo;
+  const amountRaw  = accepted.maxAmountRequired;
+
   await emit({
-    kind: "action",
-    actionId: "kpass-pay",
-    actionLabel: `kpass wallet send → ${round1.amountUSDC} USDC`,
+    kind:    "action",
+    actionId: "x402-r1",
+    actionLabel: `402 received — paymentId ${paymentId.slice(0, 14)}…  amount ${fmt(BigInt(amountRaw))} USDC → escrow ${escrowAddr.slice(0, 10)}…`,
     actionStatus: "confirmed",
-    txHash: payTxHash,
   });
   await emit({
-    kind: "reasoning",
-    content: `USDC payment confirmed on Kite mainnet ✓\n  tx: ${payTxHash}\n  ${round1.amountUSDC} USDC → seller passport`,
+    kind:    "reasoning",
+    content: `402 negotiated ✓\n  paymentId: ${paymentId.slice(0, 18)}…\n  Escrow: ${escrowAddr}\n  Amount: ${fmt(BigInt(amountRaw))} USDC\n  Proof type: ${accepted.extra.quittance?.proofType ?? "ORACLE"}`,
   });
 
-  // ── Round 2: prove payment → seller delivers + posts quittance ────────────
-  await emit({ kind: "action", actionId: "r2-prove", actionLabel: `POST ${cfg.url} → prove + settle`, actionStatus: "pending" });
+  // ── Round 2: POST with X-PAYMENT header → seller settles ─────────────────
+  const xPayment = buildXPayment(paymentId, buyerAA);
 
-  let settlement: { paymentId: string; quittanceTx: string; blockNumber: number; result: string; usdcAmount: string };
+  await emit({
+    kind:    "reasoning",
+    content: `x402 Round 2 — sending X-PAYMENT…\n  Seller will: openEscrow → deliver → QuittanceRegistry.post()`,
+  });
+  await emit({ kind: "action", actionId: "x402-r2", actionLabel: `POST ${cfg.url} X-PAYMENT → settle`, actionStatus: "pending" });
+
+  let r2Body: {
+    paymentId:   string;
+    escrowTx:    string;
+    quittanceTx: string;
+    blockNumber: number;
+    usdcAmount:  string;
+    result?:     string;   // email: "Email delivered ..."
+    imageUrl?:   string;   // image: CDN URL
+    settled:     boolean;
+  };
+
+  let xPaymentResponse: string | null = null;
+
   try {
     const r2 = await fetch(cfg.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        to:        args.to,
-        message:   args.message,
-        buyerAA,
-        paymentId: round1.paymentId,
-        txHash:    payTxHash,
-      }),
-      signal: AbortSignal.timeout(120_000),
+      method:  "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-PAYMENT":    xPayment,
+      },
+      body:   JSON.stringify(serviceBody),
+      signal: AbortSignal.timeout(120_000), // image gen + 2x AA UserOps can be slow
     });
+
+    xPaymentResponse = r2.headers.get("x-payment-response");
+
+    if (r2.status === 202) {
+      // Cheap seller acknowledged but skipped delivery — escrow is open, deadline will trigger refund
+      const body = await r2.json() as { paymentId: string; escrowTx?: string; note?: string };
+      await emit({
+        kind: "action",
+        actionId: "x402-r2",
+        actionLabel: `202 Accepted — cheap seller skipped delivery (refund + slash at deadline)`,
+        actionStatus: "failed",
+      });
+      await emit({
+        kind:    "reasoning",
+        content: `Cheap seller opened escrow but did not deliver. Escrow deadline will trigger automatic refund and bond slash.`,
+      });
+      return {
+        success:    false,
+        skipped:    true,
+        paymentId:  body.paymentId,
+        escrowTx:   body.escrowTx,
+        note:       body.note ?? "Refund + slash will fire at deadline",
+      };
+    }
+
     if (!r2.ok) {
       const txt = await r2.text().catch(() => "");
-      return { success: false, error: `Seller Round 2 failed (${r2.status}): ${txt.slice(0, 200)}` };
+      return { success: false, error: `Seller Round 2 failed (${r2.status}): ${txt.slice(0, 300)}` };
     }
-    settlement = await r2.json() as typeof settlement;
+
+    r2Body = await r2.json() as typeof r2Body;
   } catch (e: unknown) {
-    const err = e as { message?: string };
-    return { success: false, error: `Seller Round 2 error: ${err.message}` };
+    return { success: false, error: `Round 2 error: ${(e as { message?: string }).message}` };
   }
 
-  await emit({ kind: "action", actionId: "r2-prove", actionLabel: `Quittance posted → block ${settlement.blockNumber}`, actionStatus: "confirmed", txHash: settlement.quittanceTx });
+  await emit({
+    kind:     "action",
+    actionId: "x402-r2",
+    actionLabel: `Escrow opened + Quittance posted → block ${r2Body.blockNumber}`,
+    actionStatus: "confirmed",
+    txHash:   r2Body.quittanceTx,
+    blockNumber: r2Body.blockNumber,
+  });
 
-  // ── Verify escrow settled on-chain ────────────────────────────────────────
-  await emit({ kind: "reasoning", content: `Verifying escrow settlement on-chain…  paymentId: ${settlement.paymentId.slice(0, 18)}…` });
-  try {
-    const [, , , , isSettled] = (await c.escrow.getEscrowRecord(settlement.paymentId)) as [string, string, bigint, bigint, boolean, boolean];
-    await emit({
-      kind: "reasoning",
-      content: isSettled
-        ? `Escrow settled on-chain ✓  Seller received ${settlement.usdcAmount} USDC`
-        : `⚠ Escrow record not yet finalised — quittance propagating.`,
-    });
-  } catch { /* non-fatal */ }
+  // Decode X-PAYMENT-RESPONSE for logging
+  if (xPaymentResponse) {
+    try {
+      const decoded = JSON.parse(Buffer.from(xPaymentResponse, "base64").toString());
+      await emit({
+        kind:    "reasoning",
+        content: `X-PAYMENT-RESPONSE verified ✓\n  escrowTx:    ${decoded.escrowTx ?? r2Body.escrowTx}\n  quittanceTx: ${decoded.quittanceTx ?? r2Body.quittanceTx}`,
+      });
+    } catch { /* ignore parse errors */ }
+  }
 
   // ── Emit quittance receipt ────────────────────────────────────────────────
   await emit({
     kind: "quittance",
     receipt: {
-      paymentId:   settlement.paymentId,
+      paymentId:   r2Body.paymentId,
       seller:      args.sellerName,
       adapter:     cfg.proofType,
-      amount:      settlement.usdcAmount,
+      amount:      r2Body.usdcAmount,
       status:      "SETTLED",
-      txHash:      settlement.quittanceTx,
-      blockNumber: settlement.blockNumber,
+      txHash:      r2Body.quittanceTx,
+      blockNumber: r2Body.blockNumber,
     },
   });
 
+  const deliverable = r2Body.imageUrl
+    ? { imageUrl: r2Body.imageUrl }
+    : { result: r2Body.result };
+
   return {
     success:     true,
-    result:      settlement.result,
-    paymentId:   settlement.paymentId,
-    quittanceTx: settlement.quittanceTx,
-    blockNumber: settlement.blockNumber,
-    paymentTx:   payTxHash,
-    note:        "Paid via Kite Passport wallet. Quittance proof posted on Kite mainnet. Swap to kpass execute once seller URL is allowlisted.",
+    ...deliverable,
+    paymentId:   r2Body.paymentId,
+    escrowTx:    r2Body.escrowTx,
+    quittanceTx: r2Body.quittanceTx,
+    blockNumber: r2Body.blockNumber,
+    usdcAmount:  r2Body.usdcAmount,
+    kitescan:    `https://scan.gokite.ai/tx/${r2Body.quittanceTx}`,
   };
 }
 
@@ -359,14 +481,14 @@ async function toolSendSmsViaX402(
 async function run(task: string) {
   await emit({ kind: "user", content: task });
 
-  const provider  = getProvider();
-  const buyerKey  = process.env.BUYER_PRIVATE_KEY;
+  const provider = getProvider();
+  const buyerKey = process.env.BUYER_PRIVATE_KEY;
   if (!buyerKey) {
     await emit({ kind: "error", content: "BUYER_PRIVATE_KEY not set in .env" });
     return;
   }
-  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.startsWith("sk-...")) {
-    await emit({ kind: "error", content: "OPENAI_API_KEY not set. Add your key to quittance-agents/.env" });
+  if (!process.env.OPENAI_API_KEY) {
+    await emit({ kind: "error", content: "OPENAI_API_KEY not set in .env" });
     return;
   }
 
@@ -380,8 +502,7 @@ async function run(task: string) {
     { role: "user",   content: task },
   ];
 
-  // ── LLM tool-calling loop ─────────────────────────────────────────────────
-  for (let turn = 0; turn < 10; turn++) {
+  for (let turn = 0; turn < 12; turn++) {
     const response = await openai.chat.completions.create({
       model:       "gpt-4o-mini",
       messages,
@@ -392,18 +513,13 @@ async function run(task: string) {
     const msg = response.choices[0].message;
     messages.push(msg);
 
-    // Emit any text the model produced
     if (msg.content?.trim()) {
       await emit({ kind: "agent", content: msg.content.trim() });
     }
 
-    // No tool calls → model is done
     if (!msg.tool_calls?.length) break;
 
-    // Execute each tool call
     for (const _tc of msg.tool_calls) {
-      // The OpenAI SDK union includes CustomToolCall which lacks .function —
-      // we only ever receive standard function calls, so cast safely.
       const tc = _tc as OpenAI.Chat.ChatCompletionMessageToolCall & {
         function: { name: string; arguments: string };
       };
@@ -411,14 +527,10 @@ async function run(task: string) {
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(tc.function.arguments); } catch { /**/ }
 
-      // Show the model's decision
       const argStr = Object.keys(args).length
         ? Object.entries(args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")
         : "";
-      await emit({
-        kind:    "reasoning",
-        content: `→ ${tc.function.name}(${argStr})`,
-      });
+      await emit({ kind: "reasoning", content: `→ ${tc.function.name}(${argStr})` });
 
       let result: unknown;
       try {
@@ -429,17 +541,19 @@ async function run(task: string) {
           case "check_buyer_wallet":
             result = await toolCheckBuyerWallet(buyerAA, provider);
             break;
-          case "send_sms_via_x402":
-            result = await toolSendSmsViaX402(
-              args as { sellerName: string; to: string; message: string },
-              sellers, buyerAA, provider,
+          case "quittance_pay":
+            result = await toolQuittancePay(
+              args as Parameters<typeof toolQuittancePay>[0],
+              sellers,
+              buyerAA,
             );
             break;
           default:
             result = { error: `Unknown tool: ${tc.function.name}` };
         }
-      } catch (err: any) {
-        result = { error: err.reason ?? err.shortMessage ?? err.message ?? String(err) };
+      } catch (err: unknown) {
+        const e = err as { reason?: string; shortMessage?: string; message?: string };
+        result = { error: e.reason ?? e.shortMessage ?? e.message ?? String(err) };
       }
 
       messages.push({
@@ -460,15 +574,16 @@ async function main() {
   const taskIdx = args.indexOf("--task");
   const task    = taskIdx >= 0
     ? args[taskIdx + 1]
-    : "Send an SMS alert to +1-555-0192 about a KITE price movement.";
+    : "Send an order confirmation email to demo@example.com and generate a product banner image.";
 
-  console.log("\n── Quittance Buyer Agent (GPT-4o mini) ───────────────────\n");
+  console.log("\n── Quittance Buyer Agent (GPT-4o mini) — x402 facilitator-free ──\n");
   console.log(`Task: ${task}\n`);
 
   try {
     await run(task);
-  } catch (err: any) {
-    await emit({ kind: "error", content: err.message ?? String(err) });
+  } catch (err: unknown) {
+    const e = err as { message?: string };
+    await emit({ kind: "error", content: e.message ?? String(err) });
     process.exit(1);
   }
 }

@@ -332,10 +332,9 @@ async function main() {
       jsonRes(res, 400, { error: "X-PAYMENT must contain paymentId and buyerAA" });
       return;
     }
-    if (!xp.sessionToken) {
-      jsonRes(res, 401, { error: "X-PAYMENT missing sessionToken" });
-      return;
-    }
+
+    // v0: authorization = buyer AA's on-chain escrow allowance (checked below).
+    // sessionToken is optional metadata. Full JWT verification is v0.1.
 
     const p = pending.get(paymentId);
     if (!p) {
