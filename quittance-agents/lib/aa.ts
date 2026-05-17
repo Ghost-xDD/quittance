@@ -5,9 +5,19 @@
  *  - Deterministic AA wallet addresses (salt = 0n always)
  *  - A ready-made signFn from an ethers.Wallet
  *  - send + poll helpers that surface clear errors
+ *
+ * Paymaster note: the gokite USDC token-paymaster collects gas fees from the
+ * sender's AA in USDC during postOp.  It requires the sender AA to have
+ * approved the paymaster before postOp runs.  Following the SDK's own
+ * addApproveOperation pattern, every UserOp we build automatically prepends
+ *   USDC.approve(paymaster, 0)  +  USDC.approve(paymaster, MaxUint256)
+ * so the allowance is always set before postOp executes.
  */
 import { ethers } from "ethers";
 import { GokiteAASDK } from "gokite-aa-sdk";
+
+// Kite mainnet USDC token-paymaster — from gokite-aa-sdk config.
+const PAYMASTER_ADDR = "0x83b66982F07247F017b7954F8a775135beE931a4";
 
 // Fixed salt so every EOA always maps to the same AA wallet.
 export const AA_SALT = 0n;
@@ -41,7 +51,8 @@ export interface SendResult {
 
 /**
  * Send a single contract call from an AA wallet and wait for confirmation.
- * Uses the Kite bundler + paymaster (gasless to the owner).
+ * Uses the Kite bundler + USDC token-paymaster (gasless to the owner).
+ * Automatically prepends paymaster approve calls so postOp can collect fees.
  */
 export async function aaSend(
   sdk: GokiteAASDK,
@@ -51,9 +62,17 @@ export async function aaSend(
   value = 0n,
 ): Promise<SendResult> {
   const signFn = makeSignFn(ownerWallet);
+  const usdcAddr = process.env.USDC_ADDRESS!;
+  const approve0   = encodeCall("function approve(address,uint256) returns (bool)", [PAYMASTER_ADDR, 0n]);
+  const approveMax = encodeCall("function approve(address,uint256) returns (bool)", [PAYMASTER_ADDR, ethers.MaxUint256]);
+
   const userOpHash = await sdk.sendUserOperation(
     ownerWallet.address,
-    { target, callData, value },
+    {
+      targets:   [usdcAddr, usdcAddr, target],
+      values:    [0n, 0n, value],
+      callDatas: [approve0, approveMax, callData],
+    },
     signFn,
     AA_SALT,
   );
@@ -74,6 +93,7 @@ export async function aaSend(
 
 /**
  * Send a batch of contract calls atomically from one AA wallet.
+ * Also prepends paymaster approve calls so postOp can collect fees.
  */
 export async function aaBatch(
   sdk: GokiteAASDK,
@@ -81,12 +101,16 @@ export async function aaBatch(
   calls: Array<{ target: string; callData: string; value?: bigint }>,
 ): Promise<SendResult> {
   const signFn = makeSignFn(ownerWallet);
+  const usdcAddr = process.env.USDC_ADDRESS!;
+  const approve0   = encodeCall("function approve(address,uint256) returns (bool)", [PAYMASTER_ADDR, 0n]);
+  const approveMax = encodeCall("function approve(address,uint256) returns (bool)", [PAYMASTER_ADDR, ethers.MaxUint256]);
+
   const userOpHash = await sdk.sendUserOperation(
     ownerWallet.address,
     {
-      targets:   calls.map((c) => c.target),
-      callDatas: calls.map((c) => c.callData),
-      values:    calls.map((c) => c.value ?? 0n),
+      targets:   [usdcAddr, usdcAddr, ...calls.map((c) => c.target)],
+      callDatas: [approve0, approveMax, ...calls.map((c) => c.callData)],
+      values:    [0n, 0n, ...calls.map((c) => c.value ?? 0n)],
     },
     signFn,
     AA_SALT,

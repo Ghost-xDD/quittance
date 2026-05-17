@@ -29,12 +29,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "task is required" }, { status: 400 });
   }
 
-  // Fire-and-forget: buyer-agent streams events back via /api/agent-events webhook
-  const extraEnv: Record<string, string> = { FORCE_COLOR: "0" };
+  // Derive the webhook URL from the incoming request so it works on any port/host.
+  const origin = req.nextUrl.origin; // e.g. http://localhost:3000
+  const webhookUrl = `${origin}/api/agent-events`;
+
+  const extraEnv: Record<string, string> = {
+    FORCE_COLOR: "0",
+    EVENTS_WEBHOOK_URL: webhookUrl,
+  };
   if (sessionToken) {
     extraEnv.KPASS_SESSION_TOKEN = sessionToken;
   }
 
+  // Fire-and-forget: buyer-agent streams events back via /api/agent-events webhook
   const proc = spawn(
     "npx",
     ["tsx", "scripts/buyer-agent.ts", "--task", task],
