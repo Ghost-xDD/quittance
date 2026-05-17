@@ -31,5 +31,6 @@ export interface AgentEvent {
   blockNumber?: number;
   userOpHash?: string;
   receipt?: QuittanceEventReceipt;
+  imageUrl?: string;
   timestamp?: number;
 }

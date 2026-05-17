@@ -512,6 +512,7 @@ async function toolQuittancePay(
       txHash:      r2Body.quittanceTx,
       blockNumber: r2Body.blockNumber,
     },
+    imageUrl: r2Body.imageUrl,
   });
 
   const deliverable = r2Body.imageUrl

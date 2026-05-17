@@ -19,128 +19,123 @@ const DEMO_SCRIPT: ScriptStep[] = [
   // ── Act 0: Passport session approval ──
   {
     kind: "passport", delay: 0,
-    content: "Connect Kite Passport to authorize a 1 USDC spending session.",
+    content: "Connect Kite Passport to authorize a spending session.",
   },
-  // ── Act 1: Happy path — sms.kite delivers, ORACLE proof settles ──
+
+  // ── Act 1: Stakes — cheap seller fails, pro seller delivers ──
   {
     kind: "user", delay: 0,
-    content: "I need to send an SMS alert to +1-555-0192 about a sudden price movement on KITE/USDC.",
+    content: "Send an order confirmation email to demo@example.com.",
   },
   {
     kind: "reasoning", delay: 600,
-    content: "Querying QuittanceRegistry for registered SMS sellers on Kite testnet…",
-  },
-  {
-    kind: "reasoning", delay: 400,
-    content: "Found 6 sellers. Filtering by adapter: ORACLE (real-time delivery proof, lowest latency for time-sensitive alerts).",
-  },
-  {
-    kind: "reasoning", delay: 500,
-    content: "Ranking by reputation × success rate × bond size:\n  sms.kite     — rep 96, 97.4% success, 2.5 PYUSD bond   ← WINNER\n  sms-cheap.kite — rep 58, 71.2% success, 0.5 PYUSD bond",
-  },
-  {
-    kind: "reasoning", delay: 400,
-    content: "Preparing meta-transaction via Forwarder (EIP-712). Buyer approves Escrow directly — gasless to end user via Kite AA gasless service.",
-  },
-  {
-    kind: "action", delay: 500,
-    content: "Opening escrow with sms.kite",
-    actionLabel: "Escrow.openEscrow(sms.kite, 0.001 PYUSD, ORACLE, deadline+300s)",
-    txHash: "0x3f7a9c12d4e81b05",
-    blockNumber: 21436812,
-  },
-  {
-    kind: "agent", delay: 700,
-    content: "Escrow is open. 0.001 PYUSD is locked — sms.kite can't touch it until they post a signed delivery receipt from an independent attestor. If nothing shows up within 300 seconds, the funds come back to you automatically.",
+    content: "→ list_sellers()",
   },
   {
     kind: "reasoning", delay: 800,
-    content: "Polling for ORACLE proof submission… sms.kite response time avg 1.2s — within SLA.",
-  },
-  {
-    kind: "reasoning", delay: 1800,
-    content: "Proof received. Attestor 0x68d9…2e44 signed delivery receipt. Verifying on-chain signature against registered attestor set…",
-  },
-  {
-    kind: "action", delay: 300,
-    content: "Settling quittance",
-    actionLabel: "Escrow.settle(paymentId=0x91a347bc, proof=0x4a1f…c8e3)",
-    txHash: "0xb2c4e87a9f103d56",
-    blockNumber: 21436819,
-  },
-  {
-    kind: "quittance", delay: 600,
-    content: "Quittance settled.",
-    receipt: {
-      paymentId: "0x91a347bc",
-      seller: "sms.kite",
-      adapter: "ORACLE",
-      amount: 0.001,
-      status: "SETTLED",
-      txHash: "0xb2c4e87a9f103d56",
-      blockNumber: 21436819,
-    },
-  },
-  {
-    kind: "agent", delay: 400,
-    content: "Delivered and settled. sms.kite posted a valid attestor signature, escrow released 0.001 PYUSD to them, and the proof is recorded in QuittanceRegistry at block 21,436,819. Their reputation score increased by +0.02.",
-  },
-
-  // ── Act 2: Slashing — sms-cheap submits fraudulent proof ──
-  {
-    kind: "user", delay: 1200,
-    content: "Good. Now send another alert to +1-555-0193 — use the cheapest option this time.",
-  },
-  {
-    kind: "reasoning", delay: 500,
-    content: "User requested cheapest option. Overriding reliability-first ranking.",
+    content: "Two email sellers found:\n  email.kite       — Gold, 100% success, 1.0 USDC bond\n  email-cheap.kite — Bronze, no track record, 1.0 USDC bond\n\nProtocol protects me on failure — trying cheapest first.",
   },
   {
     kind: "reasoning", delay: 400,
-    content: "Selected: sms-cheap.kite at 0.001 PYUSD/msg. Bronze tier — proceeding with caution. Bond posted: 0.5 PYUSD (covers 500× the trade value).",
+    content: "→ quittance_pay(sellerName=\"email-cheap.kite\", to=\"demo@example.com\", subject=\"Order Confirmation\", ...)",
   },
   {
-    kind: "action", delay: 500,
-    content: "Opening escrow with sms-cheap.kite",
-    actionLabel: "Escrow.openEscrow(sms-cheap.kite, 0.001 PYUSD, ORACLE, deadline+300s)",
-    txHash: "0xd91c5b3e7f820a41",
-    blockNumber: 21436834,
-  },
-  {
-    kind: "reasoning", delay: 900,
-    content: "Waiting for ORACLE proof… deadline T+300s. 12 seconds elapsed.",
-  },
-  {
-    kind: "reasoning", delay: 1200,
-    content: "⚠ Proof received from sms-cheap.kite but attestor signature INVALID. Expected attestor 0x68d9…2e44, got 0x00fa…1102 — not in registered attestor set. This is a fraudulent settlement attempt.",
-  },
-  {
-    kind: "reasoning", delay: 500,
-    content: "Triggering slashing: sms-cheap.kite bond (0.5 PYUSD) will be seized. Buyer PYUSD will be refunded from escrow.",
+    kind: "reasoning", delay: 300,
+    content: "x402 Round 1 — requesting from email-cheap.kite…",
   },
   {
     kind: "action", delay: 400,
-    content: "Slashing sms-cheap.kite",
-    actionLabel: "Bond.slash(seller=sms-cheap.kite, paymentId=0x7e3c9a12)",
-    txHash: "0xf4a8123e9c56b701",
-    blockNumber: 21436848,
+    content: "402 negotiation",
+    actionLabel: "POST /task → 402 received — paymentId 0xd8c749…  amount 0.001 USDC → escrow 0x72D11a…",
   },
   {
-    kind: "quittance", delay: 600,
-    content: "Quittance slashed.",
+    kind: "reasoning", delay: 300,
+    content: "x402 Round 2 — sending X-PAYMENT…\n  Seller will: openEscrow → deliver → QuittanceRegistry.post()",
+  },
+  {
+    kind: "action", delay: 600,
+    content: "Escrow opened by cheap seller",
+    actionLabel: "202 Accepted — cheap seller opened escrow but skipped delivery",
+  },
+  {
+    kind: "reasoning", delay: 300,
+    content: "Cheap seller took the escrow but didn't deliver. Refund + bond slash scheduled automatically. Routing to reliable seller next.",
+  },
+  {
+    kind: "reasoning", delay: 200,
+    content: "→ quittance_pay(sellerName=\"email.kite\", to=\"demo@example.com\", subject=\"Order Confirmation\", ...)",
+  },
+  {
+    kind: "action", delay: 400,
+    content: "402 negotiation",
+    actionLabel: "POST /task → 402 received — paymentId 0xaf3920…  amount 0.001 USDC → escrow 0x72D11a…",
+  },
+  {
+    kind: "action", delay: 1800,
+    content: "Escrow + quittance",
+    actionLabel: "Escrow opened + Quittance posted → block 87379",
+    txHash: "0xbe7e41c6d9323f5459eae55f2ad723f2655590977531c76dedcadbb9d3ff5dcf",
+    blockNumber: 87379,
+  },
+  {
+    kind: "quittance", delay: 400,
+    content: "",
     receipt: {
-      paymentId: "0x7e3c9a12",
-      seller: "sms-cheap.kite",
+      paymentId: "0xaf39206801212388",
+      seller: "email.kite",
       adapter: "ORACLE",
       amount: 0.001,
-      status: "SLASHED",
-      txHash: "0xf4a8123e9c56b701",
-      blockNumber: 21436848,
+      status: "SETTLED",
+      txHash: "0xbe7e41c6d9323f5459eae55f2ad723f2655590977531c76dedcadbb9d3ff5dcf",
+      blockNumber: 87379,
     },
   },
   {
     kind: "agent", delay: 400,
-    content: "sms-cheap.kite tried to settle with a forged signature — wrong attestor entirely. Bond slashed, your 0.001 PYUSD is back. Their reputation is at 48 now. I won't route to them again.",
+    content: "First I tried email-cheap.kite — they opened escrow but didn't deliver. Refund + bond slash scheduled automatically.\n\nRouted to email.kite. Email delivered. Quittance posted on Kite mainnet at block 87,379.",
+  },
+
+  // ── Act 2: Composability — image generation ──
+  {
+    kind: "user", delay: 1200,
+    content: "Generate a product banner image — futuristic city at sunset.",
+  },
+  {
+    kind: "reasoning", delay: 500,
+    content: "→ quittance_pay(sellerName=\"image.kite\", prompt=\"futuristic city at sunset\")",
+  },
+  {
+    kind: "reasoning", delay: 300,
+    content: "Different service category — routing to image.kite. Same Quittance protocol, different deliverable.",
+  },
+  {
+    kind: "action", delay: 400,
+    content: "402 negotiation",
+    actionLabel: "POST /task → 402 received — paymentId 0x59800b…  amount 0.001 USDC → escrow 0x72D11a…",
+  },
+  {
+    kind: "action", delay: 1800,
+    content: "Escrow + quittance",
+    actionLabel: "Escrow opened + Quittance posted → block 87366",
+    txHash: "0x37c98e22efe9354dd3fdd91d073ca9457de8cfd23ea8c0309491c212269b1ed3",
+    blockNumber: 87366,
+  },
+  {
+    kind: "quittance", delay: 400,
+    content: "",
+    receipt: {
+      paymentId: "0x59800b6478c35410",
+      seller: "image.kite",
+      adapter: "ORACLE",
+      amount: 0.001,
+      status: "SETTLED",
+      txHash: "0x37c98e22efe9354dd3fdd91d073ca9457de8cfd23ea8c0309491c212269b1ed3",
+      blockNumber: 87366,
+    },
+  },
+  {
+    kind: "agent", delay: 400,
+    content: "Image generated and delivered. Oracle proof of keccak256(imageUrl) posted to QuittanceRegistry at block 87,366. Escrow released 0.001 USDC to image.kite.\n\nEmail, image — same protocol. Any x402 service gets delivery guarantees in five lines of code.",
   },
 ];
 
@@ -300,11 +295,23 @@ function QuittanceMessage({ msg }: { msg: ChatMessage }) {
           <span style={{ color: statusColor, fontWeight: 500 }}>{receipt.status}</span>
         </div>
 
+        {receipt.imageUrl && (
+          <div className="mt-3 overflow-hidden rounded-sm border" style={{ borderColor: "#cdb98b" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={receipt.imageUrl}
+              alt="Generated image"
+              className="w-full object-cover"
+              style={{ maxHeight: "260px" }}
+            />
+          </div>
+        )}
+
         <dl className="num mt-3 space-y-1.5 text-[11px]">
           {[
             ["paymentId", receipt.paymentId],
             ["seller", receipt.seller],
-            ["amount", `${receipt.amount} PYUSD`],
+            ["amount", `${receipt.amount} USDC`],
             ["block", receipt.blockNumber?.toLocaleString()],
             ["txHash", receipt.txHash],
           ].filter(([, v]) => v).map(([k, v]) => (
@@ -317,9 +324,15 @@ function QuittanceMessage({ msg }: { msg: ChatMessage }) {
 
         <div className="mt-3 flex items-center gap-2 border-t pt-2.5" style={{ borderColor: "#cdb98b" }}>
           <ProofBadge type={receipt.adapter as ProofType} size="md" />
-          <span className="num text-[9.5px] uppercase tracking-[0.22em]" style={{ color: "#6e655a" }}>
-            · Kite testnet · QuittanceRegistry
-          </span>
+          <a
+            href={receipt.txHash ? `https://kitescan.ai/tx/${receipt.txHash}` : "https://kitescan.ai"}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="num text-[9.5px] uppercase tracking-[0.22em] underline-offset-2 hover:underline"
+            style={{ color: "#6e655a" }}
+          >
+            · Kite mainnet · QuittanceRegistry ↗
+          </a>
         </div>
       </div>
     </div>
@@ -412,7 +425,7 @@ function ChatInput({ onSend, onRunDemo, running, disabled, isLive }: ChatInputPr
       </div>
 
       <p className="num mt-2 text-center text-[9.5px] uppercase tracking-[0.22em] text-print-ghost">
-        Quittance · Exec-Pay-Deliver · Kite testnet
+        Quittance · Exec-Pay-Deliver · Kite mainnet
       </p>
     </div>
   );
@@ -481,6 +494,7 @@ function eventToMsg(ev: AgentEvent): ChatMessage | null {
           status:      ev.receipt.status as QuittanceStatus,
           txHash:      ev.receipt.txHash,
           blockNumber: ev.receipt.blockNumber,
+          imageUrl:    ev.imageUrl,
         },
       };
     default:

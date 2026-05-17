@@ -18,12 +18,9 @@ const TIER_BG: Record<SellerTier, string> = {
 };
 
 const INITIAL_SELLERS: Seller[] = [
-  { id: "sms-pro",      name: "sms.kite",        adapter: "ORACLE",    tier: "gold",   bond: 2.5,  successRate: 97.4, completed: 2841, avgLatencyMs: 1180, reputation: 96 },
-  { id: "pricefeed",    name: "pricefeed.kite",   adapter: "THRESHOLD", tier: "gold",   bond: 3.0,  successRate: 99.1, completed: 5204, avgLatencyMs: 840,  reputation: 98 },
-  { id: "translate-ai", name: "translate.kite",   adapter: "COSIGN",   tier: "silver", bond: 1.2,  successRate: 94.7, completed: 1103, avgLatencyMs: 2100, reputation: 88 },
-  { id: "scrape",       name: "scrape.kite",      adapter: "ZKTLS",    tier: "silver", bond: 1.8,  successRate: 91.2, completed: 877,  avgLatencyMs: 3400, reputation: 82 },
-  { id: "llm",          name: "llm.kite",         adapter: "TEE",      tier: "silver", bond: 1.5,  successRate: 88.9, completed: 624,  avgLatencyMs: 4200, reputation: 79 },
-  { id: "sms-cheap",    name: "sms-cheap.kite",   adapter: "ORACLE",   tier: "bronze", bond: 0.5,  successRate: 71.2, completed: 418,  avgLatencyMs: 3800, reputation: 58 },
+  { id: "email-pro",   name: "email.kite",        adapter: "ORACLE", tier: "gold",   bond: 1.0, successRate: 100,  completed: 3,  avgLatencyMs: 30000, reputation: 96 },
+  { id: "image",       name: "image.kite",        adapter: "ORACLE", tier: "gold",   bond: 1.0, successRate: 100,  completed: 2,  avgLatencyMs: 22000, reputation: 94 },
+  { id: "email-cheap", name: "email-cheap.kite",  adapter: "ORACLE", tier: "bronze", bond: 1.0, successRate: 0,    completed: 0,  avgLatencyMs: 10000, reputation: 42 },
 ];
 
 interface LeaderboardPanelProps {

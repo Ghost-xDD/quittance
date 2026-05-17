@@ -35,6 +35,7 @@ export interface QuittanceReceipt {
   status: QuittanceStatus;
   txHash?: string;
   blockNumber?: number;
+  imageUrl?: string;
 }
 
 // Chat message types
