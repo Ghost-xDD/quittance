@@ -199,6 +199,21 @@ function AgentMessage({ msg, stream }: { msg: ChatMessage; stream?: boolean }) {
 
 function ReasoningMessage({ msg }: { msg: ChatMessage }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [displayed, setDisplayed] = useState("");
+
+  useEffect(() => {
+    let i = 0;
+    const full = msg.content;
+    const id = setInterval(() => {
+      i += 2; // ~2 chars per tick → comfortable reading pace
+      setDisplayed(full.slice(0, i));
+      if (i >= full.length) clearInterval(id);
+    }, 16);
+    return () => clearInterval(id);
+  }, [msg.content]);
+
+  const streaming = displayed.length < msg.content.length;
+
   return (
     <div className="flex gap-3">
       <div className="flex w-6 shrink-0 justify-center">
@@ -212,11 +227,13 @@ function ReasoningMessage({ msg }: { msg: ChatMessage }) {
           <span className="num text-[9px] uppercase tracking-[0.22em] text-print-ghost">
             · reasoning ·
           </span>
-          <ChevronIcon collapsed={collapsed} />
+          {!streaming && <ChevronIcon collapsed={collapsed} />}
+          {streaming && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-seal/60" />}
         </div>
         {!collapsed && (
           <p className="mt-1.5 font-mono text-[11.5px] italic leading-relaxed text-print-faint" style={{ whiteSpace: "pre-wrap" }}>
-            {msg.content}
+            {displayed}
+            {streaming && <span className="animate-pulse opacity-60">▋</span>}
           </p>
         )}
       </div>
@@ -535,6 +552,9 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
   const stoppedRef = useRef(false);
   const passportConnectedRef = useRef(passportConnected);
   useEffect(() => { passportConnectedRef.current = passportConnected; }, [passportConnected]);
+  // Tracks the earliest time the next live reasoning message should appear,
+  // so rapid-fire events stagger naturally instead of landing all at once.
+  const nextReasoningAt = useRef(0);
 
   // ── Live SSE stream from buyer-agent process ───────────────────
   const handleLiveEvent = useCallback((ev: AgentEvent) => {
@@ -556,11 +576,26 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
     if (ev.kind === "user") {
       // New live session — reset chat (dedupe if the UI already added the
       // user message optimistically via handleUserSend).
+      nextReasoningAt.current = 0;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         const alreadyShown = last?.role === "user" && last.content === (ev.content ?? "");
         return alreadyShown ? prev : [WELCOME, msg];
       });
+    } else if (ev.kind === "reasoning") {
+      // Stagger: each reasoning message waits until the previous one has had
+      // time to finish typing (~16ms/2chars) plus a 120ms visual gap.
+      const charDelay = Math.ceil((ev.content?.length ?? 0) / 2) * 16;
+      const gap = 120;
+      const now = Date.now();
+      const scheduleAt = Math.max(now, nextReasoningAt.current);
+      nextReasoningAt.current = scheduleAt + charDelay + gap;
+      const wait = scheduleAt - now;
+      if (wait <= 0) {
+        setMessages((prev) => [...prev, msg]);
+      } else {
+        setTimeout(() => setMessages((prev) => [...prev, msg]), wait);
+      }
     } else {
       setMessages((prev) => [...prev, msg]);
     }
