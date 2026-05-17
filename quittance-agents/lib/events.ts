@@ -68,7 +68,9 @@ function logEvent(ev: AgentEvent) {
       if (ev.actionStatus === "pending") {
         console.log(`${pre} ${C.amber}[action   ]${C.reset} → ${ev.actionLabel} …`);
       } else if (ev.actionStatus === "confirmed") {
-        console.log(`${pre} ${C.green}[action   ]${C.reset} ✓ ${ev.actionLabel}  tx ${ev.txHash}  block ${ev.blockNumber}`);
+        const txPart = ev.txHash ? `  tx ${ev.txHash}` : "";
+        const blkPart = ev.blockNumber != null ? `  block ${ev.blockNumber}` : "";
+        console.log(`${pre} ${C.green}[action   ]${C.reset} ✓ ${ev.actionLabel}${txPart}${blkPart}`);
       } else {
         console.log(`${pre} ${C.red}[action   ]${C.reset} ✗ ${ev.actionLabel}`);
       }

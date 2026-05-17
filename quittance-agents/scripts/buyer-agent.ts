@@ -349,8 +349,8 @@ async function toolQuittancePay(
   const amountRaw  = accepted.maxAmountRequired;
 
   await emit({
-    kind:    "action",
-    actionId: "x402-r1",
+    kind:        "action",
+    actionId:    "x402-r1",
     actionLabel: `402 received — paymentId ${paymentId.slice(0, 14)}…  amount ${fmt(BigInt(amountRaw))} USDC → escrow ${escrowAddr.slice(0, 10)}…`,
     actionStatus: "confirmed",
   });
