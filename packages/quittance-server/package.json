@@ -1,6 +1,6 @@
 {
   "name": "@quittance/server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Quittance seller-side SDK: spec-compliant x402 with on-chain Exec-Pay-Deliver atomicity",
   "license": "MIT",
   "type": "module",
