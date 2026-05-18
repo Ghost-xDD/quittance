@@ -16,6 +16,7 @@
     "transfer-kite": "tsx scripts/transfer-kite.ts"
   },
   "dependencies": {
+    "@quittance/server": "^0.1.1",
     "dotenv": "^16.4.0",
     "ethers": "^6.13.0",
     "gokite-aa-sdk": "latest",

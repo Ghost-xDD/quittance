@@ -1,0 +1,41 @@
+{
+  "name": "@quittance/server",
+  "version": "0.1.1",
+  "description": "Quittance seller-side SDK: spec-compliant x402 with on-chain Exec-Pay-Deliver atomicity",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import":  "./dist/index.js",
+      "types":   "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build":   "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "ethers":       "^6.0.0",
+    "gokite-aa-sdk": "*"
+  },
+  "devDependencies": {
+    "@types/node":  "^22.0.0",
+    "typescript":   "^5.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url":  "https://github.com/Ghost-xDD/quittance"
+  },
+  "homepage": "https://github.com/Ghost-xDD/quittance#readme",
+  "bugs": {
+    "url": "https://github.com/Ghost-xDD/quittance/issues"
+  },
+  "keywords": ["x402", "quittance", "kite", "web3", "agent-commerce", "escrow"]
+} 
