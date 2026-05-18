@@ -25,7 +25,9 @@
   <a href="#-proof-adapters"><img src="https://img.shields.io/badge/-Proof%20Adapters-8a9b80?style=flat-square&labelColor=0d1117" /></a>&nbsp;
   <a href="#-sdk"><img src="https://img.shields.io/badge/-SDK-d4a24c?style=flat-square&labelColor=0d1117" /></a>&nbsp;
   <a href="#-deployed-contracts"><img src="https://img.shields.io/badge/-Contracts-2a3a48?style=flat-square&labelColor=0d1117" /></a>&nbsp;
-  <a href="#-running-locally"><img src="https://img.shields.io/badge/-Run%20Locally-8a9b80?style=flat-square&labelColor=0d1117" /></a>
+  <a href="#-running-locally"><img src="https://img.shields.io/badge/-Run%20Locally-8a9b80?style=flat-square&labelColor=0d1117" /></a>&nbsp;
+  <a href="https://arxiv.org/pdf/2603.01179"><img src="https://img.shields.io/badge/-A402%20Paper-1f2a35?style=flat-square&labelColor=0d1117" /></a>&nbsp;
+  <a href="https://eips.ethereum.org/EIPS/eip-8183"><img src="https://img.shields.io/badge/-ERC--8183-2a3a48?style=flat-square&labelColor=0d1117" /></a>
 </p>
 
 ---
@@ -37,7 +39,9 @@
 - [Architecture](#-architecture)
 - [Protocol](#-protocol)
   - [The Quittance Object](#the-quittance-object)
+  - [Kite AA & the gokite-aa Scheme](#kite-aa--the-gokite-aa-scheme)
   - [Payment Lifecycle](#payment-lifecycle)
+  - [Facilitator-Free Settlement](#facilitator-free-settlement--and-why-it-makes-quittance-stronger)
   - [Reputation & Bonding](#reputation--bonding)
 - [Proof Adapters](#-proof-adapters)
 - [SDK](#-sdk)
@@ -57,6 +61,12 @@ When a buyer-agent pays a seller-agent, the USDC goes into an **on-chain escrow*
 No proof by deadline? The escrow **refunds the buyer** and **slashes the seller's bond** — automatically, no dispute needed.
 
 This is the missing layer between *"the buyer paid"* (which x402 already proves) and *"the seller actually delivered"* (which nothing currently proves). With Quittance, agents can transact with strangers the way humans transact with brands — backed by escrow, slashing, and verifiable reputation, not trust.
+
+**Built on the shoulders of two adjacent efforts — and completing both:**
+
+- **[A402](https://arxiv.org/pdf/2603.01179)** (Peking University / SJTU, 2025) formalised the Exec-Pay-Deliver atomicity problem and proposed off-chain TEE channels as a solution — achieving O(1) on-chain cost but requiring every seller to run a TEE enclave and a channel vault. Quittance is the Kite native, on-chain, TEE-optional complement: full auditability, bond slashing, and reputation that A402's channel model does not have. We read A402. We cite it. We're the on-chain answer to the same problem.
+
+- **[ERC-8183 — Agentic Commerce Protocol](https://eips.ethereum.org/EIPS/eip-8183)** standardised the agent job lifecycle (`createJob → fund → submit → evaluate → complete / reject`) but **explicitly leaves the evaluator slot open** — there is no canonical delivery proof in the spec. Quittance's `QuittanceEvaluatorHook` implements `IACPHook` and is the canonical answer to that gap: any ERC-8183 marketplace registers it with one config line and immediately inherits escrow, slashing, and proof-of-delivery.
 
 ### Problems Solved
 
@@ -131,30 +141,6 @@ graph TB
     style FWD fill:#2a3a48,stroke:#d4a24c,color:#f5efe2
 ```
 
-### Payment Lifecycle
-
-```mermaid
-graph LR
-    A["🤖 Buyer-Agent<br/>sends task"] --> B["📄 HTTP 402<br/>+ escrow params"]
-    B --> C["🔐 openEscrow<br/>USDC locked on-chain"]
-    C --> D["⚙️ Seller<br/>executes service"]
-    D --> E["✍️ Oracle<br/>signs proof"]
-    E --> F["📜 Registry.post<br/>quittance verified"]
-    F --> G["💚 Escrow releases<br/>→ seller paid"]
-    C --> H["⏱️ Deadline<br/>expires — no proof"]
-    H --> I["🔴 refund()<br/>buyer refunded<br/>bond slashed"]
-
-    style A fill:#1f2a35,stroke:#d4a24c,color:#f5efe2
-    style B fill:#2a3a48,stroke:#d4a24c,color:#f5efe2
-    style C fill:#d4a24c,stroke:#e8bf7a,color:#0d1117
-    style D fill:#2a3a48,stroke:#8a9b80,color:#f5efe2
-    style E fill:#b07e2a,stroke:#d4a24c,color:#f5efe2
-    style F fill:#d4a24c,stroke:#e8bf7a,color:#0d1117
-    style G fill:#8a9b80,stroke:#a3b899,color:#0d1117
-    style H fill:#1f2a35,stroke:#b8553a,color:#f5efe2
-    style I fill:#b8553a,stroke:#d4755a,color:#f5efe2
-```
-
 ---
 
 ## 📋 Protocol
@@ -182,7 +168,56 @@ struct Quittance {
 
 `paymentId` is deterministic: `keccak256(abi.encode("Q001", chainId, buyer, seller, requestHash, nonce))`.
 
+### Kite AA & the gokite-aa Scheme
+
+Quittance is built on Kite's [Account Abstraction SDK](https://docs.gokite.ai/kite-chain/account-abstraction-sdk) (`gokite-aa-sdk`). Every party in the system is an **ERC-4337 smart account (AA wallet)** derived deterministically from a Kite Agent Passport EOA.
+
+**Wallet roles:**
+
+| Wallet | Role | Gas |
+|:-------|:-----|:----|
+| ![](https://img.shields.io/badge/-Kite%20Passport-d4a24c?style=flat-square&labelColor=0d1117) `0x441f…` | User identity + session approval. Authorization only — not the payment source. | — |
+| ![](https://img.shields.io/badge/-Buyer%20AA%20(ClientAgentVault)-8a9b80?style=flat-square&labelColor=0d1117) `0x35a3…` | Holds USDC. Has a standing `approve(Escrow, allowance)`. Source of every payment. | USDC token-paymaster |
+| ![](https://img.shields.io/badge/-Seller%20AA-2a3a48?style=flat-square) `0xFE77…` | Submits `openEscrow` and `Registry.post` UserOps on behalf of the seller. | USDC token-paymaster |
+
+Both AA wallets use the Kite **USDC token-paymaster** (`0x83b66982F07247F017b7954F8a775135beE931a4`) — gas is collected in USDC during `postOp`. Neither party ever needs native KITE to transact.
+
+**The `gokite-aa` payment scheme** is the x402 scheme identifier used in the `accepts` block. It tells any x402-aware buyer client to construct an `X-PAYMENT` header containing:
+
+```json
+{
+  "scheme":       "gokite-aa",
+  "paymentId":    "0x…",
+  "buyerAA":      "0x35a3…",
+  "sessionToken": "<kpass-issued session JWT>"
+}
+```
+
+The `sessionToken` is issued by **Kite Passport** when the user approves an agent session in the UI — setting a budget cap, asset scope, and expiry. It is the authorization layer: it proves the human consented. The seller verifies it (or checks `buyerAA.allowance(Escrow) ≥ amount` on-chain for v0) before opening escrow. Kite Passport handles consent; Quittance handles settlement. Neither replaces the other.
+
 ### Payment Lifecycle
+
+```mermaid
+graph LR
+    A["🤖 Buyer-Agent<br/>sends task"] --> B["📄 HTTP 402<br/>+ escrow params"]
+    B --> C["🔐 openEscrow<br/>USDC locked on-chain"]
+    C --> D["⚙️ Seller<br/>executes service"]
+    D --> E["✍️ Oracle<br/>signs proof"]
+    E --> F["📜 Registry.post<br/>quittance verified"]
+    F --> G["💚 Escrow releases<br/>→ seller paid"]
+    C --> H["⏱️ Deadline<br/>expires — no proof"]
+    H --> I["🔴 refund()<br/>buyer refunded<br/>bond slashed"]
+
+    style A fill:#1f2a35,stroke:#d4a24c,color:#f5efe2
+    style B fill:#2a3a48,stroke:#d4a24c,color:#f5efe2
+    style C fill:#d4a24c,stroke:#e8bf7a,color:#0d1117
+    style D fill:#2a3a48,stroke:#8a9b80,color:#f5efe2
+    style E fill:#b07e2a,stroke:#d4a24c,color:#f5efe2
+    style F fill:#d4a24c,stroke:#e8bf7a,color:#0d1117
+    style G fill:#8a9b80,stroke:#a3b899,color:#0d1117
+    style H fill:#1f2a35,stroke:#b8553a,color:#f5efe2
+    style I fill:#b8553a,stroke:#d4755a,color:#f5efe2
+```
 
 The wire format is spec-compliant x402. Two rounds:
 
@@ -216,6 +251,50 @@ The wire format is spec-compliant x402. Two rounds:
 ```
 
 The seller verifies the `X-PAYMENT`, calls `openEscrow` (pulls USDC from buyer's standing allowance), executes the service, has the oracle sign the result, and posts the quittance — all before returning `200`. Escrow releases in the same `Registry.post()` transaction.
+
+### Facilitator-Free Settlement — and Why It Makes Quittance Stronger
+
+<p>
+  <img src="https://img.shields.io/badge/Settlement-Facilitator--free%20(v0)-d4a24c?style=flat-square&labelColor=0d1117" />
+  <img src="https://img.shields.io/badge/Pieverse-Drop--in%20when%20available-2a3a48?style=flat-square&labelColor=0d1117" />
+  <img src="https://img.shields.io/badge/ksearch-catalog%20offline%20during%20build-1f2a35?style=flat-square&labelColor=0d1117" />
+</p>
+
+During the build window, two Kite-native infrastructure services were unavailable:
+
+- **Pieverse `/v2/verify` + `/v2/settle`** — the canonical x402 facilitator returned 400/500 for `gokite-aa` on chainId 2368/2366. Confirmed by multiple builders on Discord; request IDs on record (`1e7dd1f1`, `9d562a03`, `acc27254`). The `payment_target_forbidden` allowlist also gated unregistered hosts independently of Pieverse.
+- **ksearch catalog** — the Kite service catalog API (`ksearch services list`) returned 503 throughout the build window, preventing live enumeration of paid services on the network.
+
+Rather than block on infrastructure, we treated each as a design constraint and built around it.
+
+**Facilitator-free settlement** means the seller IS the settlement venue. On Round 2, the seller verifies the Kite Passport session token (authorization layer) and calls `Escrow.openEscrow()` directly against the buyer's pre-approved USDC allowance (settlement layer). The Quittance escrow contract replaces the facilitator — it's on-chain, always available, and trustless.
+
+This is not a workaround. It removes a centralized uptime dependency from the critical payment path entirely.
+
+**The Pieverse path is one config line away.** The `@quittance/server` SDK exposes a `settlement` option:
+
+```ts
+// Current v0 — facilitator-free, ships now
+settlement: "onchain"
+
+// When Pieverse is back — zero seller code changes, zero buyer changes
+settlement: { type: "facilitator", url: "https://facilitator.pieverse.io" }
+```
+
+`FacilitatorSettlement` calls `/v2/verify` + `/v2/settle` exactly per spec, with automatic fallback to on-chain if the facilitator returns non-200. Both paths produce identical on-chain artefacts — `EscrowOpened`, `QuittancePosted`, `EscrowReleased` — so buyer clients, indexers, and `ReputationView` see no difference. Flipping the facilitator on is a config change, not a code change.
+
+**For ksearch:** the catalog being offline does not block Quittance's core value proposition — every x402 service that *already exists* on Kite gets delivery guarantees by dropping in `@quittance/server`. When the catalog comes back online, the pitch becomes provably quantifiable: *"there are N paid services live on Kite today — none have delivery proof — Quittance is the missing layer for all of them."* The SDK is ready to receive that traffic the moment ksearch recovers.
+
+**Kite-native by design.** Quittance composes with the full Kite stack without forking any of it:
+
+| Kite service | Quittance relationship | Status |
+|:-------------|:----------------------|:-------|
+| ![](https://img.shields.io/badge/-Kite%20Agent%20Passport-d4a24c?style=flat-square&labelColor=0d1117) | Authorization layer — session token gates every payment | ✅ Live |
+| ![](https://img.shields.io/badge/-Kite%20AA%20SDK%20(ERC--4337)-8a9b80?style=flat-square&labelColor=0d1117) | USDC token-paymaster sponsors gas for seller UserOps | ✅ Live |
+| ![](https://img.shields.io/badge/-x402%20%2F%20gokite--aa%20scheme-d4a24c?style=flat-square&labelColor=0d1117) | Wire format — spec-compliant 402 + X-PAYMENT throughout | ✅ Live |
+| ![](https://img.shields.io/badge/-Pieverse%20facilitator-2a3a48?style=flat-square&labelColor=0d1117) | Optional settlement path — one config line to enable | ⏳ Ready |
+| ![](https://img.shields.io/badge/-ksearch%20catalog-2a3a48?style=flat-square&labelColor=0d1117) | Discovery layer — every listed service becomes a Quittance seller | ⏳ Ready |
+| ![](https://img.shields.io/badge/-kpass%20agent%3Asession%20execute-2a3a48?style=flat-square&labelColor=0d1117) | End-to-end kpass client flow — allowlist unblocked + Pieverse up | ⏳ Ready |
 
 ### Reputation & Bonding
 
@@ -270,15 +349,7 @@ createSellerServer({
 }).listen(4002, "0.0.0.0");
 ```
 
-**Settlement is swappable.** The default is facilitator-free (works today). When a facilitator is available, swap with one line — no buyer changes required:
-
-```ts
-// Facilitator-free (default — current v0)
-settlement: "onchain"
-
-// Pieverse-mediated (when available) — falls back to on-chain automatically
-settlement: { type: "facilitator", url: "https://facilitator.pieverse.io" }
-```
+The settlement backend is swappable — see [Facilitator-Free Settlement](#facilitator-free-settlement--and-why-it-makes-quittance-stronger) for the `settlement` config option and the Pieverse upgrade path.
 
 Full docs: [npmjs.com/package/@quittance/server](https://www.npmjs.com/package/@quittance/server)
 
