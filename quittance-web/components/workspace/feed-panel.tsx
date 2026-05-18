@@ -146,7 +146,7 @@ export function FeedPanel({ fullPage = false, injectEvent }: FeedPanelProps) {
                   <ProofBadge type={ev.adapter} size="sm" />
                 </div>
                 <div className="num mt-0.5 flex items-center gap-1.5 text-[9.5px] text-print-ghost">
-                  <span className="text-print-faint">{ev.amount} PYUSD</span>
+                  <span className="text-print-faint">{ev.amount} USDC</span>
                   <span>·</span>
                   <span>{relTime(ev.timestamp, clock)}</span>
                 </div>

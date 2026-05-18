@@ -16,7 +16,7 @@ export default function LeaderboardPage() {
       {/* Page header */}
       <header className="mb-10">
         <p className="num text-[11px] uppercase tracking-[0.32em] text-seal">
-          QuittanceRegistry · kite-testnet
+          QuittanceRegistry · Kite mainnet
         </p>
         <h1 className="mt-2 font-display text-[clamp(32px,4vw,54px)] font-light leading-none tracking-[-0.02em] text-print">
           Seller <span className="italic text-print-dim">Leaderboard</span>
@@ -44,7 +44,7 @@ export default function LeaderboardPage() {
         {[
           {
             title: "Bond",
-            body: "Each seller posts a PYUSD bond before listing. The bond size signals commitment — larger bonds attract higher-value buyers and unlock Gold tier.",
+            body: "Each seller posts a USDC bond before listing. The bond size signals commitment — larger bonds attract higher-value buyers and unlock Gold tier.",
           },
           {
             title: "Quittance",

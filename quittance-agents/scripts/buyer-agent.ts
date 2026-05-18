@@ -56,21 +56,21 @@ interface SellerConfig {
 function buildSellerRegistry(): Record<string, SellerConfig> {
   const reg: Record<string, SellerConfig> = {};
 
-  if (process.env.SELLER_EMAIL_PRIVATE_KEY) {
-    reg["email.kite"] = {
-      key:       process.env.SELLER_EMAIL_PRIVATE_KEY,
-      url:       process.env.SELLER_EMAIL_URL ?? "http://localhost:4002/task",
-      service:   "Email delivery (real inbox, on-chain proof)",
+  if (process.env.SELLER_EMAIL_CHEAP_PRIVATE_KEY) {
+    reg["email-cheap.kite"] = {
+      key:       process.env.SELLER_EMAIL_CHEAP_PRIVATE_KEY,
+      url:       process.env.SELLER_EMAIL_CHEAP_URL ?? "http://localhost:4003/task",
+      service:   "Email delivery (budget tier — cheapest, unreliable, ~80% fail rate)",
       type:      "email",
       proofType: "ORACLE",
       priceUSDC: "0.001",
     };
   }
-  if (process.env.SELLER_EMAIL_CHEAP_PRIVATE_KEY) {
-    reg["email-cheap.kite"] = {
-      key:       process.env.SELLER_EMAIL_CHEAP_PRIVATE_KEY,
-      url:       process.env.SELLER_EMAIL_CHEAP_URL ?? "http://localhost:4003/task",
-      service:   "Email delivery (budget, unreliable)",
+  if (process.env.SELLER_EMAIL_PRIVATE_KEY) {
+    reg["email.kite"] = {
+      key:       process.env.SELLER_EMAIL_PRIVATE_KEY,
+      url:       process.env.SELLER_EMAIL_URL ?? "http://localhost:4002/task",
+      service:   "Email delivery (gold tier — reliable, real inbox, on-chain proof)",
       type:      "email",
       proofType: "ORACLE",
       priceUSDC: "0.001",
@@ -153,11 +153,11 @@ PROTOCOL
 
 YOUR JOB
   - Call list_sellers to see available sellers and on-chain reputation.
-  - ALWAYS try the cheapest available seller first. The Quittance escrow protects you:
-    if they fail to deliver, you get a full refund and their bond gets slashed. There is
-    no downside to trying cheap first — the protocol absorbs the risk.
+  - ALWAYS try the cheapest / lowest-tier seller first (it appears first in the list_sellers result).
+    The Quittance escrow protects you: if they fail to deliver, you get a full refund and their
+    bond gets slashed. There is no downside to trying cheap first — the protocol absorbs the risk.
   - If quittance_pay returns skipped=true (seller opened escrow but did not deliver),
-    call quittance_pay again with the next best seller. Do not give up after one failure.
+    call quittance_pay again with the next seller in the list. Do not give up after one failure.
   - Call check_buyer_wallet only if you need to verify allowance.
   - Report final settlement: quittanceTx (on-chain proof), escrowTx, deliverable.
 

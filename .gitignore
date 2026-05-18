@@ -19,3 +19,5 @@ quittance-agents/node_modules/
 quittance-web/.env.local
 quittance-agents/.env
 CHECKPOINT.md
+DEMO.md
+pitch.md

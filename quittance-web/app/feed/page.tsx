@@ -3,7 +3,7 @@ import { FeedPageClient } from "./feed-client";
 
 export const metadata: Metadata = {
   title: "Quittance Feed · Live on Kite",
-  description: "Real-time stream of quittances settling on Kite testnet. Watch proof-of-delivery events as they happen — ORACLE, COSIGN, ZKTLS, TEE, THRESHOLD.",
+  description: "Real-time stream of quittances settling on Kite mainnet. Watch proof-of-delivery events as they happen — ORACLE, COSIGN, ZKTLS, TEE, THRESHOLD.",
 };
 
 export default function FeedPage() {
@@ -11,7 +11,7 @@ export default function FeedPage() {
     <div className="mx-auto max-w-[1320px] px-4 py-10 md:px-10 md:py-14">
       <header className="mb-8">
         <p className="num text-[11px] uppercase tracking-[0.32em] text-seal">
-          Live · QuittanceRegistry · kite-testnet
+          Live · QuittanceRegistry · Kite mainnet
         </p>
         <h1 className="mt-2 font-display text-[clamp(32px,4vw,54px)] font-light leading-none tracking-[-0.02em] text-print">
           Quittance <span className="italic text-print-dim">Feed</span>

@@ -164,6 +164,16 @@ button:disabled,
   border-radius: 2px;
 }
 
+/* Agent chat composer: wrapper already uses focus-within border; suppress the
+   global outline here — outline-offset stacks visually as a “double border”
+   once :focus-visible engages (often right after typing starts). */
+textarea.agent-chat-composer-input:focus,
+textarea.agent-chat-composer-input:focus-visible {
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
 ::selection { background: var(--seal); color: var(--vellum); }
 
 /* ─── QuittanceField cell animations ─────────────────────────── */

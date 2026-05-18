@@ -101,7 +101,7 @@ export function LeaderboardPanel({ fullPage = false, highlightId }: LeaderboardP
                 <span>
                   <span className="text-sage">{seller.successRate}%</span> success
                 </span>
-                <span>{seller.bond} <span className="text-print-ghost">PYUSD bond</span></span>
+                <span>{seller.bond} <span className="text-print-ghost">USDC bond</span></span>
               </div>
             </div>
 
@@ -131,7 +131,7 @@ export function LeaderboardPanel({ fullPage = false, highlightId }: LeaderboardP
         <span>
           <span className="text-print-faint">{ranked.filter((s) => s.tier === "bronze").length}</span> bronze
         </span>
-        <span className="ml-auto text-print-ghost">QuittanceRegistry · kite-testnet</span>
+        <span className="ml-auto text-print-ghost">QuittanceRegistry · Kite mainnet</span>
       </div>
     </div>
   );

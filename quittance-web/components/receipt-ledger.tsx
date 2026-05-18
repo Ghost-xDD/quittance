@@ -20,7 +20,7 @@ type Receipt = {
   seller: string;
   adapter: Adapter;
   amount: string;
-  token: "PYUSD" | "USDC";
+  token: "USDC";
   status: Status;
   born: number;
 };
@@ -45,12 +45,12 @@ const STATUS_TONE: Record<Status, string> = {
 };
 
 const INITIAL: Receipt[] = [
-  { id: "0x1a87cf41", t: "14:02:11", seller: "sms.kite", adapter: "ORACLE", amount: "0.42", token: "PYUSD", status: "SETTLED", born: 0 },
-  { id: "0x9b22ee07", t: "14:02:08", seller: "scrape.kite", adapter: "ORACLE", amount: "1.20", token: "PYUSD", status: "DELIVERED", born: 0 },
-  { id: "0x4c0177a2", t: "14:02:04", seller: "llm.kite", adapter: "COSIGN", amount: "3.75", token: "PYUSD", status: "DELIVERED", born: 0 },
-  { id: "0xee99b108", t: "14:01:59", seller: "translator.kite", adapter: "TIMEOUT", amount: "0.10", token: "PYUSD", status: "REFUNDED", born: 0 },
-  { id: "0x77f52d10", t: "14:01:54", seller: "pricefeed.kite", adapter: "ORACLE", amount: "0.05", token: "PYUSD", status: "SETTLED", born: 0 },
-  { id: "0x05c4be39", t: "14:01:50", seller: "sms.kite", adapter: "ORACLE", amount: "0.42", token: "PYUSD", status: "PENDING", born: 0 },
+  { id: "0x1a87cf41", t: "14:02:11", seller: "sms.kite", adapter: "ORACLE", amount: "0.42", token: "USDC", status: "SETTLED", born: 0 },
+  { id: "0x9b22ee07", t: "14:02:08", seller: "scrape.kite", adapter: "ORACLE", amount: "1.20", token: "USDC", status: "DELIVERED", born: 0 },
+  { id: "0x4c0177a2", t: "14:02:04", seller: "llm.kite", adapter: "COSIGN", amount: "3.75", token: "USDC", status: "DELIVERED", born: 0 },
+  { id: "0xee99b108", t: "14:01:59", seller: "translator.kite", adapter: "TIMEOUT", amount: "0.10", token: "USDC", status: "REFUNDED", born: 0 },
+  { id: "0x77f52d10", t: "14:01:54", seller: "pricefeed.kite", adapter: "ORACLE", amount: "0.05", token: "USDC", status: "SETTLED", born: 0 },
+  { id: "0x05c4be39", t: "14:01:50", seller: "sms.kite", adapter: "ORACLE", amount: "0.42", token: "USDC", status: "PENDING", born: 0 },
 ];
 
 const MAX_ROWS = 7;
@@ -79,7 +79,7 @@ export function ReceiptLedger() {
           seller: rand(SELLERS),
           adapter: rand(ADAPTERS),
           amount: rand(AMOUNTS),
-          token: "PYUSD",
+          token: "USDC",
           status: "PENDING",
           born: counter++,
         };
@@ -130,7 +130,7 @@ export function ReceiptLedger() {
               Live ledger
             </span>
             <span className="num text-[10px] uppercase tracking-[0.28em] text-print-faint">
-              QuittanceRegistry · kite-testnet
+              QuittanceRegistry · Kite mainnet
             </span>
           </div>
           <div className="num flex items-center gap-5 text-[10px] uppercase tracking-[0.22em] text-print-faint">

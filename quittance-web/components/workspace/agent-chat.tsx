@@ -364,13 +364,10 @@ const DEMO_AUTO_START = process.env.NEXT_PUBLIC_DEMO_AUTO_START === "true";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
-  onRunDemo: () => void;
-  running: boolean;
   disabled: boolean;
-  isLive: boolean;
 }
 
-function ChatInput({ onSend, onRunDemo, running, disabled, isLive }: ChatInputProps) {
+function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -404,37 +401,26 @@ function ChatInput({ onSend, onRunDemo, running, disabled, isLive }: ChatInputPr
         }}
       />
 
-      <div className="flex items-end gap-2.5 rounded-sm border border-seam bg-vellum-2/60 px-3 py-2.5 focus-within:border-seal/60 transition-colors">
+      <div className="flex items-end gap-2.5 rounded-sm border border-seam bg-vellum-2/60 px-3 py-2.5 transition-colors focus-within:border-seal/60">
         <textarea
           ref={ref}
           value={value}
           onChange={autosize}
           onKeyDown={onKey}
           disabled={disabled}
-          placeholder={isLive ? "Message the buyer agent…" : "Message buyer agent (or press ▶ Demo to simulate)"}
+          placeholder="Message the buyer agent…"
           rows={1}
-          className="flex-1 resize-none bg-transparent text-[13.5px] leading-relaxed text-print placeholder:text-print-ghost focus:outline-none"
+          className="agent-chat-composer-input flex-1 resize-none border-0 bg-transparent text-[13.5px] leading-relaxed text-print shadow-none outline-none ring-0 placeholder:text-print-ghost"
           style={{ minHeight: "24px", maxHeight: "160px" }}
         />
 
         <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
-          {!running && (
-            <button
-              type="button"
-              onClick={onRunDemo}
-              disabled={disabled}
-              className="num flex items-center gap-1.5 border border-seal/40 px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-seal/80 transition-colors hover:border-seal hover:text-seal disabled:opacity-40"
-            >
-              <span>▶</span>
-              <span className="hidden sm:inline">Demo</span>
-            </button>
-          )}
           <button
             type="button"
             onClick={submit}
             disabled={!value.trim() || disabled}
             aria-label="Send"
-            className="flex h-8 w-8 items-center justify-center border border-seam text-print-faint transition-colors hover:border-seal hover:text-seal disabled:opacity-30"
+            className="flex h-8 w-8 items-center justify-center border border-seam text-print-faint transition-colors hover:border-seal hover:text-seal focus-visible:outline-none disabled:opacity-30"
           >
             <SendIcon />
           </button>
@@ -834,13 +820,7 @@ export function AgentChat({ onQuittanceEvent }: AgentChatProps) {
       </div>
 
       {/* Input bar */}
-      <ChatInput
-        onSend={handleUserSend}
-        onRunDemo={runDemoScript}
-        running={running}
-        disabled={false}
-        isLive={isLive}
-      />
+      <ChatInput onSend={handleUserSend} disabled={running} />
     </div>
     </>
   );
