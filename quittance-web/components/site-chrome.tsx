@@ -4,13 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { QuittanceMark } from "@/components/quittance-mark";
 
 const NAV = [
-  { href: "/#adapters", label: "Adapters" },
-  { href: "/#sdk", label: "SDK" },
-  { href: "/#passports", label: "Passports" },
+  { href: "https://www.npmjs.com/package/@quittance/server", label: "SDK", external: true },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/feed", label: "Feed" },
   { href: "/workspace", label: "Workspace" },
@@ -58,6 +55,7 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
+                {...("external" in item && item.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
                 className="relative px-4 py-2 text-[13px] font-medium tracking-wide text-print-dim transition-colors hover:text-print"
               >
                 {item.label}
@@ -73,7 +71,6 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
               </span>
               Kite
             </span>
-            <ThemeToggle />
             <div ref={menuRef} className="relative md:hidden">
               <button
                 type="button"
@@ -99,6 +96,7 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
                         <li key={item.href}>
                           <Link
                             href={item.href}
+                            {...("external" in item && item.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
                             className="flex items-center px-3 py-2.5 text-[13px] font-medium text-print-dim transition-colors hover:bg-vellum-3/40 hover:text-print"
                           >
                             {item.label}

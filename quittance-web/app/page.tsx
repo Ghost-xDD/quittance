@@ -151,8 +151,8 @@ function Hero({ reduce }: { reduce: boolean }) {
           className="col-span-12 max-w-[580px] text-[17px] leading-[1.55] text-print-dim md:col-span-7"
         >
           Quittance is the missing layer between &ldquo;the buyer paid&rdquo; and &ldquo;the seller
-          actually delivered&rdquo; — escrow, verifiable proofs, bonds, and an on-chain
-          reputation that compounds. Built on Kite, drop-in for any x402 server.
+          actually delivered&rdquo; — escrow, verifiable proofs, bonds, and on-chain reputation.
+          Watch an agent take a calculated risk, get protected, and settle — live on Kite mainnet.
         </motion.p>
 
         <motion.div
@@ -162,18 +162,18 @@ function Hero({ reduce }: { reduce: boolean }) {
           className="col-span-12 flex flex-wrap items-center gap-4 pt-2"
         >
           <Link
-            href="#sdk"
+            href="/workspace"
             className="group relative inline-flex items-center gap-3 overflow-hidden border border-seal bg-seal px-7 py-3.5 text-[13px] font-medium uppercase tracking-[0.18em] text-ink transition-colors hover:border-seal-deep hover:bg-seal-deep"
           >
-            <span className="relative">Drop in the SDK</span>
+            <span className="relative">Open the workspace</span>
             <Arrow />
           </Link>
           <Link
-            href="#adapters"
+            href="/leaderboard"
             className="group inline-flex items-center gap-3 px-2 py-3.5 text-[13px] font-medium uppercase tracking-[0.18em] text-print-dim transition-colors hover:text-print"
           >
             <span className="relative pb-1">
-              See the adapters
+              View the leaderboard
               <span className="absolute inset-x-0 bottom-0 h-px origin-left scale-x-50 bg-seam-2 transition-transform duration-300 group-hover:scale-x-100 group-hover:bg-print" />
             </span>
             <Arrow />
@@ -392,17 +392,19 @@ function Manifesto() {
           className="col-span-12 mt-12 flex flex-wrap items-center gap-5 border-t border-seam pt-10"
         >
           <Link
-            href="#sdk"
+            href="/workspace"
             className="group inline-flex items-center gap-3 border border-seal bg-seal px-7 py-3.5 text-[12px] font-medium uppercase tracking-[0.2em] text-ink transition-colors hover:border-seal-deep hover:bg-seal-deep"
           >
-            Read the SDK
+            Open the workspace
             <Arrow />
           </Link>
           <Link
-            href="#passports"
+            href="https://www.npmjs.com/package/@quittance/server"
+            target="_blank"
+            rel="noopener noreferrer"
             className="num inline-flex items-center gap-3 px-2 py-3.5 text-[11px] font-medium uppercase tracking-[0.2em] text-print-dim hover:text-print"
           >
-            Reputation passports <Arrow />
+            npm install @quittance/server <Arrow />
           </Link>
           <Link
             href="#top"

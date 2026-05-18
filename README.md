@@ -477,8 +477,38 @@ quittance/
 <p>
   <img src="https://img.shields.io/badge/Node.js-v18%2B-8a9b80?style=flat-square&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/Kite%20RPC-rpc.gokite.ai-d4a24c?style=flat-square&labelColor=0d1117" />
+  <img src="https://img.shields.io/badge/kpass%20CLI-required-d4a24c?style=flat-square&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/OpenAI%20Key-required%20for%20buyer%20agent-2a3a48?style=flat-square&labelColor=0d1117" />
 </p>
+
+### 0. Prerequisites — kpass CLI
+
+The [Kite Passport CLI](https://docs.gokite.ai/kite-agent-passport/kite-agent-passport) (`kpass`) is required to:
+- Authenticate your Kite Passport account
+- Create agent spending sessions (the `sessionToken` embedded in every `X-PAYMENT` header)
+- Inspect agents and sessions
+
+```bash
+# Install kpass (macOS / Linux)
+curl -sSL https://kpass.gokite.ai/install.sh | bash
+
+# Log in
+kpass login
+
+# Create a spending session for the demo (24h, 0.1 USDC cap)
+kpass agent:session create \
+  --delegation '{
+    "task_summary": "Quittance demo",
+    "max_amount_per_tx": "0.01",
+    "max_total_amount": "0.1",
+    "ttl": "24h",
+    "assets": ["USDC"]
+  }' \
+  --output json
+# → copy session_token → paste into the quittance.xyz Passport modal
+```
+
+The buyer AA wallet (`0x35a3…`) must have a **standing USDC allowance** to the Escrow contract. Run `npm run setup-mainnet` in `quittance-agents/` to set this up on first use.
 
 ### 1. Contracts
 
@@ -493,7 +523,7 @@ npx hardhat run scripts/deploy.ts --network kite_mainnet
 # Outputs addresses → copy into quittance-agents/.env
 ```
 
-### 2. Seller agents
+### 2. Seller agents (Railway or local)
 
 ```bash
 cd quittance-agents && npm install
