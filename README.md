@@ -64,7 +64,7 @@ This is the missing layer between *"the buyer paid"* (which x402 already proves)
 
 **Built on the shoulders of two adjacent efforts — and completing both:**
 
-- **[A402](https://arxiv.org/pdf/2603.01179)** (Peking University / SJTU, 2025) formalised the Exec-Pay-Deliver atomicity problem and proposed off-chain TEE channels as a solution — achieving O(1) on-chain cost but requiring every seller to run a TEE enclave and a channel vault. Quittance is the Kite native, on-chain, TEE-optional complement: full auditability, bond slashing, and reputation that A402's channel model does not have. We read A402. We cite it. We're the on-chain answer to the same problem.
+- **[A402](https://arxiv.org/pdf/2603.01179)** (Peking University / SJTU, 2025) formalised the Exec-Pay-Deliver atomicity problem and proposed off-chain TEE channels as a solution — achieving O(1) on-chain cost but requiring every seller to run a TEE enclave and a channel vault. Quittance is the **Kite native**, on-chain, TEE-optional complement: full auditability, bond slashing, and reputation that A402's channel model does not have. We read A402. We cite it. We're the on-chain answer to the same problem.
 
 - **[ERC-8183 — Agentic Commerce Protocol](https://eips.ethereum.org/EIPS/eip-8183)** standardised the agent job lifecycle (`createJob → fund → submit → evaluate → complete / reject`) but **explicitly leaves the evaluator slot open** — there is no canonical delivery proof in the spec. Quittance's `QuittanceEvaluatorHook` implements `IACPHook` and is the canonical answer to that gap: any ERC-8183 marketplace registers it with one config line and immediately inherits escrow, slashing, and proof-of-delivery.
 
