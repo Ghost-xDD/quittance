@@ -25,6 +25,10 @@ type Step =
 
 const DELEGATION_CMD = `kpass agent:session create --delegation '{"task":{"summary":"Quittance buyer agent — email and image delivery via x402 on Kite Mainnet"},"payment_policy":{"allowed_payment_approaches":["x402"],"assets":["USDC"],"max_amount_per_tx":"0.01","max_total_amount":"1","ttl_seconds":86400}}' --output json`;
 
+// When true the server already has KPASS_SESSION_TOKEN in its env — the modal
+// shows a lightweight "use prefunded session" shortcut instead of the full flow.
+const PREFUNDED = process.env.NEXT_PUBLIC_PREFUNDED_SESSION === "1";
+
 export function PassportConnectModal({ onConnected, onSkip }: PassportConnectModalProps) {
   const [step, setStep] = useState<Step>("idle");
   const [approvalUrl, setApprovalUrl] = useState("");
@@ -77,6 +81,13 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
           taskSummary: "Quittance buyer agent — email and image delivery via x402 on Kite Mainnet",
         }),
       });
+
+      // Any non-2xx response (e.g. kpass not available on this host) → paste mode
+      if (!res.ok) {
+        setStep("paste");
+        return;
+      }
+
       const data = await res.json() as {
         requestId?: string;
         approvalUrl?: string;
@@ -84,15 +95,9 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
         error?: string;
       };
 
-      // kpass not installed in this environment — fall back to paste-token mode
-      if (data.error?.includes("kpass") || data.error?.includes("command not found")) {
-        setStep("paste");
-        return;
-      }
-
+      // kpass not installed server-side — fall back to paste-token mode
       if (data.error || !data.approvalUrl || !data.requestId) {
-        setErrorMsg(data.error ?? "Failed to create session.");
-        setStep("error");
+        setStep("paste");
         return;
       }
 
@@ -100,9 +105,9 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
       setPolicy(data.policy ?? null);
       setStep("awaiting-approval");
       startPolling(data.requestId);
-    } catch (e: unknown) {
-      setErrorMsg(e instanceof Error ? e.message : "Network error");
-      setStep("error");
+    } catch {
+      // Network error or JSON parse failure — fall back to paste
+      setStep("paste");
     }
   }
 
@@ -153,7 +158,43 @@ export function PassportConnectModal({ onConnected, onSkip }: PassportConnectMod
         {/* Body */}
         <div className="px-6 py-5">
           <AnimatePresence mode="wait">
-            {step === "idle" && (
+            {/* ── Prefunded demo mode ── */}
+            {PREFUNDED && step === "idle" && (
+              <motion.div key="prefunded" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <div className="mb-4 rounded-sm border border-seal/30 bg-seal/5 px-4 py-3">
+                  <div className="num mb-1 text-[9px] uppercase tracking-[0.22em] text-seal">
+                    Pre-funded test session
+                  </div>
+                  <p className="text-[12.5px] leading-relaxed text-print-dim">
+                    This deployment has a shared session pre-authorised for testing.
+                    Payments are real but capped at <span className="font-mono text-seal">0.01 USDC</span> per
+                    transaction — no passkey required.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => onConnected(undefined)}
+                  className="mb-3 w-full rounded-sm bg-seal px-4 py-2.5 text-[12px] font-medium uppercase tracking-[0.18em] text-white transition hover:bg-seal/90"
+                >
+                  Use prefunded session →
+                </button>
+
+                <div className="flex items-center gap-3">
+                  <div className="h-px flex-1 bg-seam/40" />
+                  <span className="num text-[9px] uppercase tracking-[0.2em] text-print-ghost">or</span>
+                  <div className="h-px flex-1 bg-seam/40" />
+                </div>
+
+                <button
+                  onClick={handleGenerate}
+                  className="mt-3 w-full rounded-sm border border-seam px-4 py-2 text-[11px] uppercase tracking-[0.18em] text-print-dim transition hover:border-seal/60 hover:text-print"
+                >
+                  Connect your own Passport →
+                </button>
+              </motion.div>
+            )}
+
+            {!PREFUNDED && step === "idle" && (
               <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <p className="mb-5 text-[13px] leading-relaxed text-print-dim">
                   This agent pays providers via{" "}
