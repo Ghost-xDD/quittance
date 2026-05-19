@@ -1,9 +1,10 @@
-# railway.toml — Quittance seller agents
+# railway.toml — Quittance agents
 #
-# Three services share this root directory (quittance-agents/).
+# All services share this root directory (quittance-agents/).
 # Each Railway service overrides [deploy].startCommand via its own
 # service settings in the Railway dashboard:
 #
+#   buyer-agent  →  npm run buyer-server
 #   email-pro    →  npm run seller-email
 #   email-cheap  →  npm run seller-email
 #                   (with SELLER_CHEAP_MODE=true + SELLER_EMAIL_NAME=email-cheap.kite)

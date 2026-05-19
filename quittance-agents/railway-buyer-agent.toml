@@ -1,0 +1,26 @@
+# railway-buyer-agent.toml — Quittance Buyer Agent
+#
+# In Railway dashboard → service Settings → Config File Path:
+#   quittance-agents/railway-buyer-agent.toml
+#
+# Required env vars for this service:
+#   BUYER_PRIVATE_KEY=<buyer EOA key>
+#   OPENAI_API_KEY=<OpenAI key>
+#   KPASS_SESSION_TOKEN=<prefunded session id>
+#   SELLER_EMAIL_URL=https://email-seller-production.up.railway.app/task
+#   SELLER_EMAIL_CHEAP_URL=https://email-seller-cheap-production.up.railway.app/task
+#   SELLER_IMAGE_URL=https://image-seller-production.up.railway.app/task
+#   SELLER_EMAIL_PRIVATE_KEY=<email-pro seller EOA key>
+#   SELLER_EMAIL_CHEAP_PRIVATE_KEY=<email-cheap seller EOA key>
+#   SELLER_IMAGE_PRIVATE_KEY=<image seller EOA key>
+#   (plus the shared chain/contract vars from .env.railway.example)
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm run buyer-server"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

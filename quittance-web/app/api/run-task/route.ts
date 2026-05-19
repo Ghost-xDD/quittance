@@ -1,18 +1,22 @@
 /**
  * POST /api/run-task
  *
- * Spawns the buyer-agent process with a user-provided task.
- * The agent emits structured AgentEvents back to /api/agent-events
- * (webhook), which broadcasts them to all SSE clients.
+ * Triggers the buyer-agent with a user-provided task.
  *
- * Body: { task: string }
+ * Production (Vercel): forwards the request to BUYER_AGENT_URL (Railway service)
+ *   via HTTP — the remote server spawns the agent and streams AgentEvents back
+ *   to EVENTS_WEBHOOK_URL.
+ *
+ * Local dev: spawns buyer-agent.ts directly as a child process (original behaviour).
+ *
+ * Body: { task: string, sessionToken?: string }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { spawn } from "child_process";
 import path from "path";
 
-// Resolve quittance-agents directory relative to the Next.js project root
-const AGENTS_DIR = path.resolve(process.cwd(), "..", "quittance-agents");
+const AGENTS_DIR    = path.resolve(process.cwd(), "..", "quittance-agents");
+const BUYER_AGENT_URL = process.env.BUYER_AGENT_URL; // e.g. https://buyer-agent.railway.app
 
 export async function POST(req: NextRequest) {
   let task = "";
@@ -29,10 +33,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "task is required" }, { status: 400 });
   }
 
-  // Derive the webhook URL from the incoming request so it works on any port/host.
-  const origin = req.nextUrl.origin; // e.g. http://localhost:3000
-  const webhookUrl = `${origin}/api/agent-events`;
+  const origin      = req.nextUrl.origin;
+  const webhookUrl  = `${origin}/api/agent-events`;
 
+  // ── Production: delegate to Railway buyer-agent service ────────
+  if (BUYER_AGENT_URL) {
+    try {
+      const res = await fetch(`${BUYER_AGENT_URL}/run`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          task,
+          eventsWebhookUrl: webhookUrl,
+          // Pass session token if the user provided one; otherwise the
+          // Railway service uses its own KPASS_SESSION_TOKEN env var.
+          ...(sessionToken && { sessionToken }),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        return NextResponse.json({ error: (err as { error?: string }).error ?? res.statusText }, { status: 502 });
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "buyer-agent service unreachable";
+      return NextResponse.json({ error: msg }, { status: 502 });
+    }
+    return NextResponse.json({ ok: true, task });
+  }
+
+  // ── Local dev: spawn buyer-agent process directly ──────────────
   const extraEnv: Record<string, string> = {
     FORCE_COLOR: "0",
     EVENTS_WEBHOOK_URL: webhookUrl,
@@ -41,7 +70,6 @@ export async function POST(req: NextRequest) {
     extraEnv.KPASS_SESSION_TOKEN = sessionToken;
   }
 
-  // Fire-and-forget: buyer-agent streams events back via /api/agent-events webhook
   const proc = spawn(
     "npx",
     ["tsx", "scripts/buyer-agent.ts", "--task", task],
